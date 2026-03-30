@@ -1,5 +1,5 @@
 /*
- * display.c - SH8601 AMOLED 显示驱动 (ESP-IDF + LVGL 9 + esp_lvgl_port)
+ * display.c - SH8601 AMOLED 显示驱动
  */
 
 #include "display.h"
@@ -18,26 +18,28 @@
 
 static const char *TAG = "display";
 
-// LVGL display handle
 static lv_display_t *lvgl_disp = NULL;
+static esp_lcd_panel_io_handle_t panel_io = NULL;
 
-// SH8601 brightness command
+// SH8601 命令
+#define SH8601_CMD_SLPIN   0x10
+#define SH8601_CMD_SLPOUT  0x11
+#define SH8601_CMD_DISPON  0x29
+#define SH8601_CMD_DISPOFF 0x28
 #define SH8601_CMD_WRDISBV 0x51
+#define SH8601_CMD_WRCTRLD 0x53
 
 esp_err_t display_set_brightness(uint8_t brightness)
 {
-    if (!lvgl_disp) return ESP_ERR_INVALID_STATE;
-
-    // 获取 panel handle（从 lvgl port 的用户数据中获取）
-    // 直接通过 panel IO 发送亮度命令
-    return ESP_OK;  // 暂时留空，后续完善
+    if (!panel_io) return ESP_ERR_INVALID_STATE;
+    return esp_lcd_panel_io_tx_param(panel_io, SH8601_CMD_WRDISBV, &brightness, 1);
 }
 
 esp_err_t display_init(void)
 {
     ESP_LOGI(TAG, "Initializing display...");
 
-    // ========== SPI 总线 (QSPI) ==========
+    // SPI 总线 (QSPI)
     spi_bus_config_t bus_cfg = SH8601_PANEL_BUS_QSPI_CONFIG(
         LCD_SCLK_PIN, LCD_SDIO0_PIN, LCD_SDIO1_PIN,
         LCD_SDIO2_PIN, LCD_SDIO3_PIN,
@@ -45,14 +47,13 @@ esp_err_t display_init(void)
     );
     ESP_ERROR_CHECK(spi_bus_initialize(SPI2_HOST, &bus_cfg, SPI_DMA_CH_AUTO));
 
-    // ========== LCD Panel IO (QSPI) ==========
-    esp_lcd_panel_io_handle_t io_handle = NULL;
+    // LCD Panel IO
     esp_lcd_panel_io_spi_config_t io_cfg = SH8601_PANEL_IO_QSPI_CONFIG(
         LCD_CS_PIN, NULL, NULL
     );
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI2_HOST, &io_cfg, &io_handle));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI2_HOST, &io_cfg, &panel_io));
 
-    // ========== SH8601 Panel ==========
+    // SH8601 Panel
     esp_lcd_panel_handle_t panel_handle = NULL;
     sh8601_vendor_config_t vendor_cfg = {
         .flags = {
@@ -66,26 +67,36 @@ esp_err_t display_init(void)
         .bits_per_pixel = 16,
         .vendor_config = &vendor_cfg,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_sh8601(io_handle, &panel_cfg, &panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_sh8601(panel_io, &panel_cfg, &panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
     ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_handle, true));
 
-    // 设置初始亮度
-    uint8_t brightness = CONFIG_BOARD_LCD_BRIGHTNESS_DEFAULT;
-    esp_lcd_panel_io_tx_param(io_handle, SH8601_CMD_WRDISBV, &brightness, 1);
+    // Sleep out
+    esp_lcd_panel_io_tx_param(panel_io, SH8601_CMD_SLPOUT, NULL, 0);
+    vTaskDelay(pdMS_TO_TICKS(120));
 
-    ESP_LOGI(TAG, "SH8601 panel initialized");
+    // Display on
+    esp_lcd_panel_disp_on_off(panel_handle, true);
+    vTaskDelay(pdMS_TO_TICKS(20));
 
-    // ========== LVGL Port ==========
+    // Enable backlight control and set brightness
+    uint8_t ctrl_d = 0x24;  // Enable brightness control
+    esp_lcd_panel_io_tx_param(panel_io, SH8601_CMD_WRCTRLD, &ctrl_d, 1);
+
+    uint8_t brightness = 200;  // Bright (0-255)
+    esp_lcd_panel_io_tx_param(panel_io, SH8601_CMD_WRDISBV, &brightness, 1);
+
+    ESP_LOGI(TAG, "SH8601 initialized, brightness=%d", brightness);
+
+    // LVGL Port
     const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
     ESP_ERROR_CHECK(lvgl_port_init(&lvgl_cfg));
 
-    // ========== 添加显示屏到 LVGL Port ==========
+    // Add display
     const lvgl_port_display_cfg_t disp_cfg = {
-        .io_handle = io_handle,
+        .io_handle = panel_io,
         .panel_handle = panel_handle,
-        .buffer_size = LCD_WIDTH * 40,  // 40 行缓冲
+        .buffer_size = LCD_WIDTH * 40,
         .double_buffer = true,
         .hres = LCD_WIDTH,
         .vres = LCD_HEIGHT,
