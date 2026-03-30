@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "espressif/esp_lcd_sh8601": "*",
+    "espressif/esp_lcd_touch_ft5x06": "*",
+    "lvgl/lvgl": ">=8.4.0",
+    "espressif/esp_lvgl_port": "*"
+  }
+}
