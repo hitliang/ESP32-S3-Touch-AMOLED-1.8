@@ -15,22 +15,19 @@
 #include "tca9554.h"
 #include "ui.h"
 
-// TCA9554 LCD 控制引脚 (从 pin_config.h 的定义)
+static const char *TAG = "main";
+
+// TCA9554 LCD 控制引脚
 #define TCA_LCD_PWR_EN    1
 #define TCA_LCD_RESET     0
 
-static const char *TAG = "main";
-
 void app_main(void)
 {
-    // 先用 printf 输出，确保串口一定能收到
     printf("\n\n========================================\n");
     printf("  ESP32-S3-Touch-AMOLED-1.8\n");
     printf("  Build: %s %s\n", __DATE__, __TIME__);
     printf("  Free heap: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
     printf("========================================\n\n");
-
-    ESP_LOGI(TAG, "Starting system init...");
 
     // NVS
     esp_err_t ret = nvs_flash_init();
@@ -41,17 +38,16 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
     printf("[OK] NVS initialized\n");
 
-    // I2C bus (touch_init 里初始化)
+    // 1. 先初始化触摸（创建 I2C 总线）
     printf("[..] Initializing touch (I2C)...\n");
     ret = touch_init();
     if (ret != ESP_OK) {
         printf("[!!] Touch init FAILED: 0x%x\n", ret);
-        // 不中止，继续尝试
     } else {
         printf("[OK] Touch initialized\n");
     }
 
-    // TCA9554 GPIO 扩展器 (控制 LCD 电源和复位)
+    // 2. TCA9554 GPIO 扩展器（共享 I2C 总线）
     printf("[..] Initializing TCA9554...\n");
     ret = tca9554_init();
     if (ret != ESP_OK) {
@@ -67,7 +63,7 @@ void app_main(void)
         printf("[OK] LCD power enabled\n");
     }
 
-    // 显示驱动 + LVGL
+    // 3. 显示驱动 + LVGL
     printf("[..] Initializing display...\n");
     ret = display_init();
     if (ret != ESP_OK) {
@@ -76,7 +72,7 @@ void app_main(void)
         printf("[OK] Display initialized\n");
     }
 
-    // 创建 UI
+    // 4. 创建 UI
     ui_create();
     printf("[OK] UI created\n");
 
