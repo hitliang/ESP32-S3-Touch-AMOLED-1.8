@@ -1,5 +1,5 @@
 /*
- * touch.c - FT3168 触摸驱动 (LVGL 9)
+ * touch.c - FT3168 触摸驱动 (LVGL 9, 共享 I2C 总线)
  */
 
 #include "touch.h"
@@ -15,6 +15,14 @@
 
 static const char *TAG = "touch";
 
+// 全局 I2C 总线句柄，由 touch_init 创建，供其他组件使用
+static i2c_master_bus_handle_t shared_i2c_bus = NULL;
+
+i2c_master_bus_handle_t touch_get_i2c_bus(void)
+{
+    return shared_i2c_bus;
+}
+
 esp_err_t touch_init(void)
 {
     ESP_LOGI(TAG, "Initializing FT3168 touch controller...");
@@ -28,13 +36,16 @@ esp_err_t touch_init(void)
         .glitch_ignore_cnt = 7,
         .flags.enable_internal_pullup = true,
     };
-    i2c_master_bus_handle_t i2c_bus;
-    ESP_ERROR_CHECK(i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus));
+    esp_err_t ret = i2c_new_master_bus(&i2c_bus_cfg, &shared_i2c_bus);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "I2C bus init failed: 0x%x", ret);
+        return ret;
+    }
 
     // FT5x06 触摸驱动初始化
     esp_lcd_panel_io_handle_t tp_io_handle = NULL;
     esp_lcd_panel_io_i2c_config_t tp_io_cfg = ESP_LCD_TOUCH_IO_I2C_FT5x06_CONFIG();
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_bus, &tp_io_cfg, &tp_io_handle));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(shared_i2c_bus, &tp_io_cfg, &tp_io_handle));
 
     esp_lcd_touch_handle_t tp_handle = NULL;
     esp_lcd_touch_config_t tp_cfg = {
