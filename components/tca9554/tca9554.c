@@ -18,8 +18,7 @@ static const char *TAG = "tca9554";
 static uint8_t output_state = 0x00;
 static i2c_master_dev_handle_t dev_handle = NULL;
 
-// 从 touch.c 获取共享的 I2C 总线
-extern i2c_master_bus_handle_t touch_get_i2c_bus(void);
+extern i2c_master_bus_handle_t get_i2c_bus(void);
 
 static esp_err_t tca9554_write_reg(uint8_t reg, uint8_t val)
 {
@@ -30,11 +29,9 @@ static esp_err_t tca9554_write_reg(uint8_t reg, uint8_t val)
 
 esp_err_t tca9554_init(void)
 {
-    ESP_LOGI(TAG, "Initializing TCA9554...");
-
-    i2c_master_bus_handle_t bus = touch_get_i2c_bus();
+    i2c_master_bus_handle_t bus = get_i2c_bus();
     if (!bus) {
-        ESP_LOGE(TAG, "I2C bus not initialized. Call touch_init() first.");
+        ESP_LOGE(TAG, "I2C bus not initialized");
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -45,13 +42,13 @@ esp_err_t tca9554_init(void)
     };
     esp_err_t ret = i2c_master_bus_add_device(bus, &dev_cfg, &dev_handle);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to add TCA9554 device: 0x%x", ret);
+        ESP_LOGE(TAG, "Failed to add device: 0x%x", ret);
         return ret;
     }
 
     ret = tca9554_write_reg(REG_CONFIG, 0x00);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "TCA9554 communication failed: 0x%x", ret);
+        ESP_LOGE(TAG, "TCA9554 comm failed: 0x%x", ret);
         return ret;
     }
 
