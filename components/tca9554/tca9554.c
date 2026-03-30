@@ -1,50 +1,60 @@
 /*
- * tca9554.c - TCA9554 GPIO 扩展器驱动
+ * tca9554.c - TCA9554 GPIO 扩展器驱动 (共享 I2C 总线)
  */
 
 #include "tca9554.h"
 #include "pin_config.h"
 
-#include "driver/i2c.h"
+#include "freertos/FreeRTOS.h"
+#include "driver/i2c_master.h"
 #include "esp_log.h"
 
 static const char *TAG = "tca9554";
 
-#define I2C_PORT  I2C_NUM_0
-
-// TCA9554 寄存器
 #define REG_INPUT   0x00
 #define REG_OUTPUT  0x01
-#define REG_POLARITY 0x02
 #define REG_CONFIG  0x03
 
 static uint8_t output_state = 0x00;
+static i2c_master_dev_handle_t dev_handle = NULL;
+
+// 从 touch.c 获取共享的 I2C 总线
+extern i2c_master_bus_handle_t touch_get_i2c_bus(void);
 
 static esp_err_t tca9554_write_reg(uint8_t reg, uint8_t val)
 {
+    if (!dev_handle) return ESP_ERR_INVALID_STATE;
     uint8_t buf[2] = {reg, val};
-    return i2c_master_write_to_device(I2C_PORT, TCA9554_ADDR, buf, 2, pdMS_TO_TICKS(100));
-}
-
-static esp_err_t tca9554_read_reg(uint8_t reg, uint8_t *val)
-{
-    return i2c_master_write_to_device(I2C_PORT, TCA9554_ADDR, &reg, 1, pdMS_TO_TICKS(100));
-    // Then read
-    return i2c_master_read_from_device(I2C_PORT, TCA9554_ADDR, val, 1, pdMS_TO_TICKS(100));
+    return i2c_master_transmit(dev_handle, buf, 2, pdMS_TO_TICKS(100));
 }
 
 esp_err_t tca9554_init(void)
 {
     ESP_LOGI(TAG, "Initializing TCA9554...");
 
-    // 所有引脚设为输出
-    esp_err_t ret = tca9554_write_reg(REG_CONFIG, 0x00);
+    i2c_master_bus_handle_t bus = touch_get_i2c_bus();
+    if (!bus) {
+        ESP_LOGE(TAG, "I2C bus not initialized. Call touch_init() first.");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = TCA9554_ADDR,
+        .scl_speed_hz = 400000,
+    };
+    esp_err_t ret = i2c_master_bus_add_device(bus, &dev_cfg, &dev_handle);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "TCA9554 communication failed");
+        ESP_LOGE(TAG, "Failed to add TCA9554 device: 0x%x", ret);
         return ret;
     }
 
-    // 初始输出全低
+    ret = tca9554_write_reg(REG_CONFIG, 0x00);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "TCA9554 communication failed: 0x%x", ret);
+        return ret;
+    }
+
     tca9554_write_reg(REG_OUTPUT, 0x00);
     output_state = 0x00;
 
@@ -55,22 +65,17 @@ esp_err_t tca9554_init(void)
 esp_err_t tca9554_set_pin(uint8_t pin, bool level)
 {
     if (pin > 7) return ESP_ERR_INVALID_ARG;
-    if (level) {
-        output_state |= (1 << pin);
-    } else {
-        output_state &= ~(1 << pin);
-    }
+    if (level) output_state |= (1 << pin);
+    else output_state &= ~(1 << pin);
     return tca9554_write_reg(REG_OUTPUT, output_state);
 }
 
 esp_err_t tca9554_get_pin(uint8_t pin, bool *level)
 {
     if (pin > 7 || !level) return ESP_ERR_INVALID_ARG;
-    uint8_t input_val;
-    esp_err_t ret = i2c_master_read_from_device(I2C_PORT, TCA9554_ADDR, &input_val, 1, pdMS_TO_TICKS(100));
-    if (ret == ESP_OK) {
-        *level = (input_val & (1 << pin)) != 0;
-    }
+    uint8_t reg = REG_INPUT, val;
+    esp_err_t ret = i2c_master_transmit_receive(dev_handle, &reg, 1, &val, 1, pdMS_TO_TICKS(100));
+    if (ret == ESP_OK) *level = (val & (1 << pin)) != 0;
     return ret;
 }
 
@@ -82,5 +87,7 @@ esp_err_t tca9554_write_all(uint8_t value)
 
 esp_err_t tca9554_read_all(uint8_t *value)
 {
-    return i2c_master_read_from_device(I2C_PORT, TCA9554_ADDR, value, 1, pdMS_TO_TICKS(100));
+    if (!value) return ESP_ERR_INVALID_ARG;
+    uint8_t reg = REG_INPUT;
+    return i2c_master_transmit_receive(dev_handle, &reg, 1, value, 1, pdMS_TO_TICKS(100));
 }
