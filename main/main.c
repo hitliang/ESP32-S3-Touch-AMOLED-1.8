@@ -17,12 +17,10 @@
 #include "tca9554.h"
 #include "ui.h"
 
-// TCA9554 LCD 控制引脚
 #define TCA_LCD_PWR_EN    1
 #define TCA_LCD_RESET     0
 #define TCA_TOUCH_RESET   2
 
-// 全局 I2C 总线句柄
 static i2c_master_bus_handle_t i2c_bus = NULL;
 
 i2c_master_bus_handle_t get_i2c_bus(void)
@@ -38,7 +36,6 @@ void app_main(void)
     printf("  Free heap: %lu bytes\n", (unsigned long)esp_get_free_heap_size());
     printf("========================================\n\n");
 
-    // NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -47,7 +44,7 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
     printf("[OK] NVS initialized\n");
 
-    // 1. 创建 I2C 总线
+    // 1. I2C 总线
     printf("[..] Initializing I2C bus...\n");
     i2c_master_bus_config_t i2c_bus_cfg = {
         .clk_source = I2C_CLK_SRC_DEFAULT,
@@ -58,51 +55,45 @@ void app_main(void)
         .flags.enable_internal_pullup = true,
     };
     ret = i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus);
-    if (ret != ESP_OK) {
-        printf("[!!] I2C bus init FAILED: 0x%x\n", ret);
-    } else {
-        printf("[OK] I2C bus initialized\n");
-    }
+    ESP_ERROR_CHECK(ret);
+    printf("[OK] I2C bus initialized\n");
 
-    // 2. TCA9554 GPIO 扩展器（控制 LCD 电源和触摸复位）
+    // 2. TCA9554 - 控制 LCD 电源和触摸复位
     printf("[..] Initializing TCA9554...\n");
     ret = tca9554_init();
-    if (ret != ESP_OK) {
-        printf("[!!] TCA9554 init FAILED: 0x%x\n", ret);
-    } else {
+    if (ret == ESP_OK) {
         printf("[OK] TCA9554 initialized\n");
-
         // 复位触摸芯片
         tca9554_set_pin(TCA_TOUCH_RESET, false);
         vTaskDelay(pdMS_TO_TICKS(20));
         tca9554_set_pin(TCA_TOUCH_RESET, true);
         vTaskDelay(pdMS_TO_TICKS(100));
-        printf("[OK] Touch reset via TCA9554\n");
-
-        // LCD 电源使能 & 复位
+        // LCD 电源
         tca9554_set_pin(TCA_LCD_PWR_EN, true);
         vTaskDelay(pdMS_TO_TICKS(10));
         tca9554_set_pin(TCA_LCD_RESET, true);
         vTaskDelay(pdMS_TO_TICKS(20));
-        printf("[OK] LCD power enabled\n");
-    }
-
-    // 3. 触摸驱动（I2C 总线已创建，触摸芯片已复位）
-    printf("[..] Initializing touch...\n");
-    ret = touch_init();
-    if (ret != ESP_OK) {
-        printf("[!!] Touch init FAILED: 0x%x (non-fatal)\n", ret);
+        printf("[OK] LCD power & touch reset done\n");
     } else {
-        printf("[OK] Touch initialized\n");
+        printf("[!!] TCA9554 FAILED: 0x%x\n", ret);
     }
 
-    // 4. 显示驱动 + LVGL
+    // 3. 显示驱动 + LVGL (必须在 touch 之前!)
     printf("[..] Initializing display...\n");
     ret = display_init();
-    if (ret != ESP_OK) {
-        printf("[!!] Display init FAILED: 0x%x\n", ret);
-    } else {
+    if (ret == ESP_OK) {
         printf("[OK] Display initialized\n");
+    } else {
+        printf("[!!] Display FAILED: 0x%x\n", ret);
+    }
+
+    // 4. 触摸驱动 (需要 display_get() 返回非 NULL)
+    printf("[..] Initializing touch...\n");
+    ret = touch_init();
+    if (ret == ESP_OK) {
+        printf("[OK] Touch initialized\n");
+    } else {
+        printf("[!!] Touch FAILED: 0x%x (non-fatal)\n", ret);
     }
 
     // 5. 创建 UI
