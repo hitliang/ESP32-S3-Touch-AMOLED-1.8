@@ -1,6 +1,6 @@
 /*
  * main.c - ESP32-S3-Touch-AMOLED-1.8
- * Visual upgrade + WiFi settings + SNTP clock (LVGL 8)
+ * v3: Visual polish + real WiFi scan + SNTP clock
  */
 
 #include <stdio.h>
@@ -23,6 +23,7 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_sntp.h"
+#include "esp_netif.h"
 #include "nvs_flash.h"
 #include "esp_lcd_sh8601.h"
 #include "esp_lcd_touch_ft5x06.h"
@@ -32,6 +33,7 @@
 static const char *TAG = "main";
 static SemaphoreHandle_t lvgl_mux = NULL;
 
+/* ── Hardware config ── */
 #define LCD_HOST        SPI2_HOST
 #define TOUCH_HOST      I2C_NUM_0
 #define PIN_LCD_CS      GPIO_NUM_12
@@ -54,41 +56,46 @@ static SemaphoreHandle_t lvgl_mux = NULL;
 #define LVGL_TASK_PRIORITY 2
 #define LVGL_TASK_STACK_SIZE (8 * 1024)
 
-/* Colors */
-#define COLOR_BG         0x0D1B2A
-#define COLOR_CARD       0x1B2838
-#define COLOR_CARD_PRESS 0x2A3F55
-#define COLOR_TEXT       0xFFFFFF
-#define COLOR_SUBTEXT    0x8899AA
-#define COLOR_ACCENT     0x00E5FF
-#define COLOR_STATUSBAR  0x111D2C
+/* ── Color palette ── */
+#define COLOR_BG          0x0A0E1A
+#define COLOR_CARD        0x141B2D
+#define COLOR_CARD_HOVER  0x1E2A42
+#define COLOR_CARD_PRESS  0x253350
+#define COLOR_TEXT         0xE8ECF4
+#define COLOR_SUBTEXT     0x6B7A94
+#define COLOR_ACCENT      0x00D4FF
+#define COLOR_ACCENT_DIM  0x005A6B
+#define COLOR_STATUSBAR   0x0D1220
+#define COLOR_SUCCESS     0x00E676
+#define COLOR_WARNING     0xFFB300
+#define COLOR_DANGER      0xFF5252
+#define COLOR_WIFI_ICON   0x4CAF50
 
-/* Fake SSIDs for demo */
-static const char *fake_ssids[] = {"Home_WiFi", "Office_5G", "Coffee_Shop", "IoT_Device"};
-#define FAKE_SSID_COUNT 4
-
-/* Menu items */
+/* ── Menu items ── */
 typedef struct {
     const char *symbol;
     const char *label;
-    lv_color_t color;
+    uint32_t color;
 } menu_item_t;
 
 static const menu_item_t menu_items[] = {
-    {LV_SYMBOL_IMAGE,    "Clock",   LV_COLOR_MAKE(0x00, 0xE5, 0xFF)},
-    {LV_SYMBOL_AUDIO,    "Music",   LV_COLOR_MAKE(0xFF, 0x6B, 0x35)},
-    {LV_SYMBOL_WIFI,     "WiFi",    LV_COLOR_MAKE(0x00, 0xE6, 0x76)},
-    {LV_SYMBOL_SETTINGS, "Setting", LV_COLOR_MAKE(0xFF, 0xD6, 0x00)},
-    {LV_SYMBOL_LOOP,     "Weather", LV_COLOR_MAKE(0xE0, 0x40, 0xFB)},
-    {LV_SYMBOL_LIST,     "More",    LV_COLOR_MAKE(0x78, 0x90, 0x9C)},
+    {LV_SYMBOL_IMAGE,    "Clock",    0x00D4FF},
+    {LV_SYMBOL_AUDIO,    "Music",    0xFF6B35},
+    {LV_SYMBOL_WIFI,     "WiFi",     0x4CAF50},
+    {LV_SYMBOL_SETTINGS, "Setting",  0xFFD600},
+    {LV_SYMBOL_LOOP,     "Weather",  0xE040FB},
+    {LV_SYMBOL_LIST,     "More",     0x78909C},
 };
 #define MENU_COUNT 6
 
-/* Globals */
+/* ── Globals ── */
 static esp_lcd_touch_handle_t tp = NULL;
 static bool wifi_connected = false;
 static bool sntp_initialized = false;
+static bool time_valid = false;
 static lv_obj_t *clock_label = NULL;
+static char saved_ssid[33] = {0};
+static char saved_pass[65] = {0};
 
 /* SH8601 init commands */
 static const sh8601_lcd_init_cmd_t lcd_init_cmds[] = {
@@ -104,19 +111,18 @@ static const sh8601_lcd_init_cmd_t lcd_init_cmds[] = {
 };
 
 /* Forward declarations */
-static void create_menu_ui(void);
+static void create_main_screen(void);
 static void create_wifi_screen(void);
-static void wifi_btn_event_cb(lv_event_t *e);
-static void back_btn_event_cb(lv_event_t *e);
-static void ssid_btn_event_cb(lv_event_t *e);
-static void wifi_switch_event_cb(lv_event_t *e);
-static void password_close_cb(lv_event_t *e);
 static void clock_timer_cb(lv_timer_t *timer);
-static void wifi_init_sta(void);
+static void wifi_init_sta(const char *ssid, const char *pass);
 static void sntp_init_and_sync(void);
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
+static void wifi_scan_task(void *arg);
+static void scan_btn_handler(lv_event_t *e);
 
-/* ===== LVGL callbacks ===== */
+/* ══════════════════════════════════════════
+   LVGL porting
+   ══════════════════════════════════════════ */
 
 static bool notify_lvgl_flush_ready(esp_lcd_panel_io_handle_t panel_io,
     esp_lcd_panel_io_event_data_t *edata, void *user_ctx)
@@ -167,7 +173,9 @@ static void lvgl_port_task(void *arg)
     }
 }
 
-/* ===== WiFi & SNTP ===== */
+/* ══════════════════════════════════════════
+   WiFi + SNTP
+   ══════════════════════════════════════════ */
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     int32_t event_id, void *event_data)
@@ -176,7 +184,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         wifi_connected = false;
+        time_valid = false;
         ESP_LOGI(TAG, "WiFi disconnected, retrying...");
+        vTaskDelay(pdMS_TO_TICKS(3000));
         esp_wifi_connect();
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         wifi_connected = true;
@@ -187,31 +197,44 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
-static void wifi_init_sta(void)
+static bool netif_initialized = false;
+static bool wifi_initialized = false;
+
+static void wifi_init_sta(const char *ssid, const char *pass)
 {
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
+    /* Save credentials */
+    if (ssid) strncpy(saved_ssid, ssid, sizeof(saved_ssid) - 1);
+    if (pass) strncpy(saved_pass, pass, sizeof(saved_pass) - 1);
 
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    if (!netif_initialized) {
+        ESP_ERROR_CHECK(esp_netif_init());
+        ESP_ERROR_CHECK(esp_event_loop_create_default());
+        netif_initialized = true;
+    }
 
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(
-        WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(
-        IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
+    if (!wifi_initialized) {
+        esp_netif_create_default_wifi_sta();
+        wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+        ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    wifi_config_t wifi_config = {
-        .sta = {
-            .ssid = "YOUR_SSID",
-            .password = "YOUR_PASSWORD",
-            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
-        },
-    };
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(
+            WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
+        ESP_ERROR_CHECK(esp_event_handler_instance_register(
+            IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL, NULL));
+        wifi_initialized = true;
+    }
+
+    wifi_config_t wifi_config = {0};
+    if (ssid && ssid[0]) {
+        strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
+        if (pass) strncpy((char *)wifi_config.sta.password, pass, sizeof(wifi_config.sta.password) - 1);
+        wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    }
+
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI(TAG, "WiFi init done, connecting...");
+    ESP_LOGI(TAG, "WiFi init done, connecting to %s...", ssid ? ssid : "(none)");
 }
 
 static void sntp_init_and_sync(void)
@@ -220,67 +243,255 @@ static void sntp_init_and_sync(void)
     ESP_LOGI(TAG, "Initializing SNTP");
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);
     esp_sntp_setservername(0, "pool.ntp.org");
+    esp_sntp_setservername(1, "time.google.com");
     esp_sntp_init();
     sntp_initialized = true;
     setenv("TZ", "CST-8", 1);
     tzset();
+
+    /* Wait for time sync in background */
+    xTaskCreatePinnedToCore((void (*)(void *))NULL, "sntp_wait", 2048, NULL, 1, NULL, 0);
 }
 
-/* ===== Clock timer (1s) ===== */
+/* ══════════════════════════════════════════
+   Clock
+   ══════════════════════════════════════════ */
 
 static void clock_timer_cb(lv_timer_t *timer)
 {
     lv_obj_t *label = (lv_obj_t *)timer->user_data;
     if (!label) return;
 
-    if (wifi_connected) {
-        time_t now;
-        struct tm ti;
-        time(&now);
-        localtime_r(&now, &ti);
-        char buf[8];
+    time_t now;
+    struct tm ti;
+    time(&now);
+    localtime_r(&now, &ti);
+
+    /* Check if time is valid (year >= 2024) */
+    if (ti.tm_year >= (2024 - 1900)) {
+        time_valid = true;
+        char buf[16];
         strftime(buf, sizeof(buf), "%H:%M", &ti);
         lv_label_set_text(label, buf);
     } else {
-        lv_label_set_text(label, "--:--");
+        /* Still waiting for SNTP */
+        if (wifi_connected) {
+            lv_label_set_text(label, "sync..");
+        } else {
+            lv_label_set_text(label, "--:--");
+        }
     }
 }
 
-/* ===== Password dialog ===== */
+/* ══════════════════════════════════════════
+   WiFi scan task
+   ══════════════════════════════════════════ */
 
-static void password_close_cb(lv_event_t *e)
+#define MAX_SCAN_RESULTS 15
+
+typedef struct {
+    char ssids[MAX_SCAN_RESULTS][33];
+    int8_t rssi[MAX_SCAN_RESULTS];
+    uint8_t authmode[MAX_SCAN_RESULTS];
+    int count;
+    lv_obj_t *list_obj;
+} wifi_scan_data_t;
+
+static wifi_scan_data_t scan_data = {0};
+
+/* ── Password dialog ── */
+static lv_obj_t *pwd_dialog = NULL;
+static lv_obj_t *pwd_ta = NULL;
+static lv_obj_t *pwd_kb = NULL;
+static char selected_ssid[33] = {0};
+
+static void pwd_connect_cb(lv_event_t *e);
+static void pwd_cancel_cb(lv_event_t *e);
+
+static void pwd_connect_cb(lv_event_t *e)
 {
-    lv_obj_t *mbox = lv_event_get_user_data(e);
-    lv_obj_del(mbox);
+    const char *pass = lv_textarea_get_text(pwd_ta);
+    ESP_LOGI(TAG, "Connecting to %s", selected_ssid);
+
+    if (pwd_kb) { lv_obj_del(pwd_kb); pwd_kb = NULL; }
+    if (pwd_dialog) { lv_obj_del(pwd_dialog); pwd_dialog = NULL; }
+
+    /* Reconnect with new credentials */
+    esp_wifi_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(300));
+
+    wifi_config_t wifi_config = {0};
+    strncpy((char *)wifi_config.sta.ssid, selected_ssid, sizeof(wifi_config.sta.ssid) - 1);
+    if (pass && pass[0]) {
+        strncpy((char *)wifi_config.sta.password, pass, sizeof(wifi_config.sta.password) - 1);
+    }
+    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    esp_wifi_connect();
+
+    /* Save */
+    strncpy(saved_ssid, selected_ssid, sizeof(saved_ssid) - 1);
+    if (pass) strncpy(saved_pass, pass, sizeof(saved_pass) - 1);
+
+    /* Go back to main screen */
+    create_main_screen();
+}
+
+static void pwd_cancel_cb(lv_event_t *e)
+{
+    if (pwd_kb) { lv_obj_del(pwd_kb); pwd_kb = NULL; }
+    if (pwd_dialog) { lv_obj_del(pwd_dialog); pwd_dialog = NULL; }
 }
 
 static void show_password_dialog(const char *ssid)
 {
-    lv_obj_t *mbox = lv_msgbox_create(NULL, "WiFi Password", "Enter password:", NULL, true);
-    lv_obj_set_size(mbox, 300, 320);
-    lv_obj_center(mbox);
+    strncpy(selected_ssid, ssid, sizeof(selected_ssid) - 1);
 
-    lv_obj_t *ta = lv_textarea_create(mbox);
-    lv_textarea_set_one_line(ta, true);
-    lv_textarea_set_password_mode(ta, true);
-    lv_textarea_set_placeholder_text(ta, "Password...");
-    lv_obj_set_width(ta, 260);
+    /* Dim overlay */
+    lv_obj_t *overlay = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(overlay, LCD_H_RES, LCD_V_RES);
+    lv_obj_set_style_bg_color(overlay, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(overlay, LV_OPA_60, 0);
+    lv_obj_set_style_border_width(overlay, 0, 0);
+    lv_obj_set_style_radius(overlay, 0, 0);
+    lv_obj_set_style_pad_all(overlay, 0, 0);
+    lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t *kb = lv_keyboard_create(lv_layer_top());
-    lv_keyboard_set_textarea(kb, ta);
-    lv_obj_add_event_cb(mbox, password_close_cb, LV_EVENT_DELETE, NULL);
+    /* Dialog */
+    pwd_dialog = lv_obj_create(overlay);
+    lv_obj_set_size(pwd_dialog, 320, 160);
+    lv_obj_center(pwd_dialog);
+    lv_obj_set_style_bg_color(pwd_dialog, lv_color_hex(COLOR_CARD), 0);
+    lv_obj_set_style_radius(pwd_dialog, 16, 0);
+    lv_obj_set_style_border_width(pwd_dialog, 0, 0);
+    lv_obj_set_style_pad_all(pwd_dialog, 12, 0);
+    lv_obj_clear_flag(pwd_dialog, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* Title */
+    lv_obj_t *title = lv_label_create(pwd_dialog);
+    char title_txt[64];
+    snprintf(title_txt, sizeof(title_txt), LV_SYMBOL_WIFI " %s", ssid);
+    lv_label_set_text(title, title_txt);
+    lv_obj_set_style_text_color(title, lv_color_hex(COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    /* Password input */
+    pwd_ta = lv_textarea_create(pwd_dialog);
+    lv_textarea_set_one_line(pwd_ta, true);
+    lv_textarea_set_password_mode(pwd_ta, true);
+    lv_textarea_set_placeholder_text(pwd_ta, "Password...");
+    lv_obj_set_size(pwd_ta, 296, 40);
+    lv_obj_align(pwd_ta, LV_ALIGN_TOP_MID, 0, 32);
+    lv_obj_set_style_bg_color(pwd_ta, lv_color_hex(0x1A2540), 0);
+    lv_obj_set_style_text_color(pwd_ta, lv_color_hex(COLOR_TEXT), 0);
+    lv_obj_set_style_border_color(pwd_ta, lv_color_hex(COLOR_ACCENT), LV_STATE_FOCUSED);
+
+    /* Buttons */
+    lv_obj_t *btn_cancel = lv_btn_create(pwd_dialog);
+    lv_obj_set_size(btn_cancel, 130, 36);
+    lv_obj_set_style_bg_color(btn_cancel, lv_color_hex(COLOR_CARD_HOVER), 0);
+    lv_obj_set_style_radius(btn_cancel, 10, 0);
+    lv_obj_set_style_border_width(btn_cancel, 0, 0);
+    lv_obj_align(btn_cancel, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_add_event_cb(btn_cancel, pwd_cancel_cb, LV_EVENT_CLICKED, overlay);
+    lv_obj_t *cl = lv_label_create(btn_cancel);
+    lv_label_set_text(cl, "Cancel");
+    lv_obj_set_style_text_color(cl, lv_color_hex(COLOR_SUBTEXT), 0);
+    lv_obj_center(cl);
+
+    lv_obj_t *btn_ok = lv_btn_create(pwd_dialog);
+    lv_obj_set_size(btn_ok, 130, 36);
+    lv_obj_set_style_bg_color(btn_ok, lv_color_hex(COLOR_ACCENT), 0);
+    lv_obj_set_style_radius(btn_ok, 10, 0);
+    lv_obj_set_style_border_width(btn_ok, 0, 0);
+    lv_obj_align(btn_ok, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_add_event_cb(btn_ok, pwd_connect_cb, LV_EVENT_CLICKED, overlay);
+    lv_obj_t *ol = lv_label_create(btn_ok);
+    lv_label_set_text(ol, "Connect");
+    lv_obj_set_style_text_color(ol, lv_color_hex(COLOR_BG), 0);
+    lv_obj_center(ol);
+
+    /* Keyboard */
+    pwd_kb = lv_keyboard_create(lv_layer_top());
+    lv_keyboard_set_textarea(pwd_kb, pwd_ta);
+    /* Move dialog up so keyboard doesn't cover it */
+    lv_obj_align(pwd_dialog, LV_ALIGN_TOP_MID, 0, 20);
 }
 
-/* ===== WiFi screen ===== */
+/* ── WiFi scan ── */
+static void wifi_scan_task(void *arg)
+{
+    /* Initialize WiFi for scanning */
+    static bool scan_netif_init = false;
+    if (!scan_netif_init) {
+        ESP_ERROR_CHECK(esp_netif_init());
+        ESP_ERROR_CHECK(esp_event_loop_create_default());
+        scan_netif_init = true;
+    }
+    esp_netif_create_default_wifi_sta();
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&cfg);
+    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_wifi_start();
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    ESP_LOGI(TAG, "Starting WiFi scan...");
+    wifi_scan_config_t scan_conf = {
+        .ssid = NULL,
+        .bssid = NULL,
+        .channel = 0,
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time.active.min = 100,
+        .scan_time.active.max = 300,
+    };
+    esp_wifi_scan_start(&scan_conf, true);
+
+    uint16_t ap_count = MAX_SCAN_RESULTS;
+    wifi_ap_record_t ap_records[MAX_SCAN_RESULTS];
+    ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&ap_count, ap_records));
+
+    scan_data.count = ap_count;
+    for (int i = 0; i < ap_count && i < MAX_SCAN_RESULTS; i++) {
+        strncpy(scan_data.ssids[i], (char *)ap_records[i].ssid, 32);
+        scan_data.rssi[i] = ap_records[i].rssi;
+        scan_data.authmode[i] = ap_records[i].authmode;
+        ESP_LOGI(TAG, "  Found: %s (%d dBm)", ap_records[i].ssid, ap_records[i].rssi);
+    }
+
+    /* Deinit scan WiFi so we can reconnect properly later */
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+    esp_wifi_deinit();
+    vTaskDelete(NULL);
+}
+
+/* ══════════════════════════════════════════
+   UI: WiFi Screen
+   ══════════════════════════════════════════ */
+
+static void wifi_ssid_btn_cb(lv_event_t *e)
+{
+    const char *ssid = (const char *)lv_event_get_user_data(e);
+    show_password_dialog(ssid);
+}
+
+static void wifi_back_cb(lv_event_t *e)
+{
+    create_main_screen();
+}
 
 static void create_wifi_screen(void)
 {
     lv_obj_t *scr = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(scr, lv_color_hex(COLOR_BG), 0);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Top bar */
+    /* ── Top bar ── */
     lv_obj_t *topbar = lv_obj_create(scr);
-    lv_obj_set_size(topbar, LCD_H_RES, 44);
+    lv_obj_set_size(topbar, LCD_H_RES, 48);
     lv_obj_set_style_bg_color(topbar, lv_color_hex(COLOR_STATUSBAR), 0);
     lv_obj_set_style_radius(topbar, 0, 0);
     lv_obj_set_style_border_width(topbar, 0, 0);
@@ -290,13 +501,13 @@ static void create_wifi_screen(void)
 
     /* Back button */
     lv_obj_t *back_btn = lv_btn_create(topbar);
-    lv_obj_set_size(back_btn, 70, 32);
+    lv_obj_set_size(back_btn, 64, 34);
     lv_obj_set_style_bg_opa(back_btn, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(back_btn, 0, 0);
     lv_obj_set_style_shadow_width(back_btn, 0, 0);
+    lv_obj_set_style_pad_all(back_btn, 0, 0);
     lv_obj_align(back_btn, LV_ALIGN_LEFT_MID, 8, 0);
-    lv_obj_add_event_cb(back_btn, back_btn_event_cb, LV_EVENT_CLICKED, NULL);
-
+    lv_obj_add_event_cb(back_btn, wifi_back_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *back_lbl = lv_label_create(back_btn);
     lv_label_set_text(back_lbl, LV_SYMBOL_LEFT " Back");
     lv_obj_set_style_text_color(back_lbl, lv_color_hex(COLOR_ACCENT), 0);
@@ -310,113 +521,139 @@ static void create_wifi_screen(void)
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
     lv_obj_center(title);
 
-    /* WiFi switch row */
-    lv_obj_t *sw_row = lv_obj_create(scr);
-    lv_obj_set_size(sw_row, LCD_H_RES - 16, 44);
-    lv_obj_set_style_bg_color(sw_row, lv_color_hex(COLOR_CARD), 0);
-    lv_obj_set_style_radius(sw_row, 12, 0);
-    lv_obj_set_style_border_width(sw_row, 0, 0);
-    lv_obj_set_style_pad_all(sw_row, 0, 0);
-    lv_obj_clear_flag(sw_row, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(sw_row, LV_ALIGN_TOP_MID, 0, 52);
+    /* ── Connection status ── */
+    lv_obj_t *status_card = lv_obj_create(scr);
+    lv_obj_set_size(status_card, LCD_H_RES - 16, 48);
+    lv_obj_set_style_bg_color(status_card, lv_color_hex(COLOR_CARD), 0);
+    lv_obj_set_style_radius(status_card, 12, 0);
+    lv_obj_set_style_border_width(status_card, 0, 0);
+    lv_obj_set_style_pad_all(status_card, 0, 0);
+    lv_obj_clear_flag(status_card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(status_card, LV_ALIGN_TOP_MID, 0, 56);
 
-    lv_obj_t *sw_lbl = lv_label_create(sw_row);
-    lv_label_set_text(sw_lbl, LV_SYMBOL_WIFI " WiFi");
-    lv_obj_set_style_text_color(sw_lbl, lv_color_hex(COLOR_TEXT), 0);
-    lv_obj_set_style_text_font(sw_lbl, &lv_font_montserrat_16, 0);
-    lv_obj_align(sw_lbl, LV_ALIGN_LEFT_MID, 12, 0);
+    lv_obj_t *status_icon = lv_label_create(status_card);
+    lv_label_set_text(status_icon, wifi_connected ? LV_SYMBOL_WIFI : LV_SYMBOL_WARNING);
+    lv_obj_set_style_text_color(status_icon, lv_color_hex(wifi_connected ? COLOR_SUCCESS : COLOR_SUBTEXT), 0);
+    lv_obj_set_style_text_font(status_icon, &lv_font_montserrat_16, 0);
+    lv_obj_align(status_icon, LV_ALIGN_LEFT_MID, 12, 0);
 
-    lv_obj_t *sw = lv_switch_create(sw_row);
-    lv_obj_set_size(sw, 48, 26);
-    lv_obj_align(sw, LV_ALIGN_RIGHT_MID, -12, 0);
-    lv_obj_add_state(sw, LV_STATE_CHECKED);
-    lv_obj_add_event_cb(sw, wifi_switch_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_t *status_txt = lv_label_create(status_card);
+    if (wifi_connected && saved_ssid[0]) {
+        char buf[80];
+        snprintf(buf, sizeof(buf), "Connected\n%s", saved_ssid);
+        lv_label_set_text(status_txt, buf);
+    } else {
+        lv_label_set_text(status_txt, "Not connected");
+    }
+    lv_obj_set_style_text_color(status_txt, lv_color_hex(COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(status_txt, &lv_font_montserrat_14, 0);
+    lv_obj_align(status_txt, LV_ALIGN_LEFT_MID, 44, 0);
 
-    /* SSID list */
+    /* ── Scan button ── */
+    lv_obj_t *scan_btn = lv_btn_create(scr);
+    lv_obj_set_size(scan_btn, LCD_H_RES - 16, 40);
+    lv_obj_set_style_bg_color(scan_btn, lv_color_hex(COLOR_ACCENT), 0);
+    lv_obj_set_style_radius(scan_btn, 12, 0);
+    lv_obj_set_style_border_width(scan_btn, 0, 0);
+    lv_obj_set_style_shadow_width(scan_btn, 0, 0);
+    lv_obj_align(scan_btn, LV_ALIGN_TOP_MID, 0, 112);
+    lv_obj_t *scan_lbl = lv_label_create(scan_btn);
+    lv_label_set_text(scan_lbl, LV_SYMBOL_WIFI " Scan Networks");
+    lv_obj_set_style_text_color(scan_lbl, lv_color_hex(COLOR_BG), 0);
+    lv_obj_set_style_text_font(scan_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_center(scan_lbl);
+
+    /* Scan click: run scan then rebuild WiFi screen */
+    lv_obj_add_event_cb(scan_btn, scan_btn_handler, LV_EVENT_CLICKED, NULL);
+
+    /* ── Network list ── */
     lv_obj_t *list = lv_list_create(scr);
-    lv_obj_set_size(list, LCD_H_RES - 16, LCD_V_RES - 120);
+    lv_obj_set_size(list, LCD_H_RES - 16, LCD_V_RES - 170);
     lv_obj_set_style_bg_color(list, lv_color_hex(COLOR_CARD), 0);
     lv_obj_set_style_radius(list, 12, 0);
     lv_obj_set_style_border_width(list, 0, 0);
-    lv_obj_set_style_pad_all(list, 8, 0);
-    lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 104);
+    lv_obj_set_style_pad_ver(list, 8, 0);
+    lv_obj_set_style_pad_hor(list, 4, 0);
+    lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 160);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
-    for (int i = 0; i < FAKE_SSID_COUNT; i++) {
-        char txt[64];
-        snprintf(txt, sizeof(txt), LV_SYMBOL_WIFI " %s", fake_ssids[i]);
+    if (scan_data.count > 0) {
+        for (int i = 0; i < scan_data.count; i++) {
+            char txt[80];
+            snprintf(txt, sizeof(txt), LV_SYMBOL_WIFI " %s", scan_data.ssids[i]);
 
-        lv_obj_t *btn = lv_list_add_btn(list, NULL, txt);
-        lv_obj_set_style_text_font(btn, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(btn, lv_color_hex(COLOR_TEXT), 0);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(COLOR_CARD), 0);
-        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(btn, lv_color_hex(COLOR_CARD_PRESS), LV_STATE_PRESSED);
+            lv_obj_t *btn = lv_list_add_btn(list, NULL, txt);
+            lv_obj_set_style_text_font(btn, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_color(btn, lv_color_hex(COLOR_TEXT), 0);
+            lv_obj_set_style_bg_color(btn, lv_color_hex(COLOR_CARD), 0);
+            lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, LV_PART_MAIN);
+            lv_obj_set_style_bg_color(btn, lv_color_hex(COLOR_CARD_PRESS), LV_STATE_PRESSED);
+            lv_obj_set_style_radius(btn, 8, 0);
 
-        /* Signal icon */
-        lv_obj_t *sig = lv_label_create(btn);
-        const char *icons[] = {
-            LV_SYMBOL_BATTERY_EMPTY,
-            LV_SYMBOL_BATTERY_1,
-            LV_SYMBOL_BATTERY_2,
-            LV_SYMBOL_BATTERY_3,
-            LV_SYMBOL_CLOSE
-        };
-        lv_label_set_text(sig, icons[i % 5]);
-        lv_obj_set_style_text_color(sig, lv_color_hex(COLOR_SUBTEXT), 0);
-        lv_obj_align(sig, LV_ALIGN_RIGHT_MID, 0, 0);
+            /* Signal strength text */
+            lv_obj_t *sig = lv_label_create(btn);
+            char sig_txt[24];
+            snprintf(sig_txt, sizeof(sig_txt), "%ddBm %s",
+                scan_data.rssi[i],
+                scan_data.authmode[i] == WIFI_AUTH_OPEN ? "Open" : "***");
+            lv_label_set_text(sig, sig_txt);
+            lv_obj_set_style_text_color(sig, lv_color_hex(COLOR_SUBTEXT), 0);
+            lv_obj_set_style_text_font(sig, &lv_font_montserrat_14, 0);
+            lv_obj_align(sig, LV_ALIGN_RIGHT_MID, -4, 0);
 
-        lv_obj_add_event_cb(btn, ssid_btn_event_cb, LV_EVENT_CLICKED, (void *)fake_ssids[i]);
+            lv_obj_add_event_cb(btn, wifi_ssid_btn_cb, LV_EVENT_CLICKED, (void *)scan_data.ssids[i]);
+        }
+    } else {
+        lv_obj_t *empty = lv_label_create(list);
+        lv_label_set_text(empty, "No networks found.\nTap Scan to search.");
+        lv_obj_set_style_text_color(empty, lv_color_hex(COLOR_SUBTEXT), 0);
+        lv_obj_set_style_text_font(empty, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_pad_all(empty, 20, 0);
     }
 
     lv_scr_load_anim(scr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
 }
 
-/* ===== Event callbacks ===== */
-
-static void wifi_btn_event_cb(lv_event_t *e)
+/* Scan button handler */
+static void scan_btn_handler(lv_event_t *e)
 {
+    /* Run scan in task */
+    xTaskCreatePinnedToCore(wifi_scan_task, "wifi_scan", 4096, NULL, 1, NULL, 0);
+    /* Wait then rebuild */
+    vTaskDelay(pdMS_TO_TICKS(3000));
     create_wifi_screen();
 }
 
-static void back_btn_event_cb(lv_event_t *e)
-{
-    /* Recreate main screen */
-    lv_obj_t *old = lv_scr_act();
-    lv_disp_t *d = lv_disp_get_default();
-    lv_obj_t *new_scr = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(new_scr, lv_color_hex(COLOR_BG), 0);
-    lv_disp_load_scr(new_scr);
-    create_menu_ui();
-    (void)old;
-}
+/* ══════════════════════════════════════════
+   UI: Main Screen
+   ══════════════════════════════════════════ */
 
-static void ssid_btn_event_cb(lv_event_t *e)
+static void menu_btn_cb(lv_event_t *e)
 {
-    const char *ssid = (const char *)lv_event_get_user_data(e);
-    ESP_LOGI(TAG, "Selected SSID: %s", ssid);
-    show_password_dialog(ssid);
-}
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    ESP_LOGI(TAG, "Menu clicked: %s", menu_items[idx].label);
 
-static void wifi_switch_event_cb(lv_event_t *e)
-{
-    lv_obj_t *sw = lv_event_get_target(e);
-    if (lv_obj_has_state(sw, LV_STATE_CHECKED)) {
-        ESP_LOGI(TAG, "WiFi ON");
-    } else {
-        ESP_LOGI(TAG, "WiFi OFF");
+    switch (idx) {
+        case 2: /* WiFi */
+            /* Scan first, then show */
+            xTaskCreatePinnedToCore(wifi_scan_task, "wifi_scan", 4096, NULL, 1, NULL, 0);
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            create_wifi_screen();
+            break;
+        default:
+            break;
     }
 }
 
-/* ===== Main Menu UI ===== */
-
-static void create_menu_ui(void)
+static void create_main_screen(void)
 {
-    lv_obj_t *scr = lv_scr_act();
+    lv_obj_t *scr = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(scr, lv_color_hex(COLOR_BG), 0);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Status bar */
+    /* ── Status bar ── */
     lv_obj_t *bar = lv_obj_create(scr);
-    lv_obj_set_size(bar, LCD_H_RES, 40);
+    lv_obj_set_size(bar, LCD_H_RES, 44);
     lv_obj_set_style_bg_color(bar, lv_color_hex(COLOR_STATUSBAR), 0);
     lv_obj_set_style_radius(bar, 0, 0);
     lv_obj_set_style_border_width(bar, 0, 0);
@@ -424,81 +661,116 @@ static void create_menu_ui(void)
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 0);
 
+    /* WiFi indicator (left) */
+    lv_obj_t *wifi_icon = lv_label_create(bar);
+    lv_label_set_text(wifi_icon, wifi_connected ? LV_SYMBOL_WIFI : LV_SYMBOL_CLOSE);
+    lv_obj_set_style_text_color(wifi_icon,
+        lv_color_hex(wifi_connected ? COLOR_WIFI_ICON : COLOR_SUBTEXT), 0);
+    lv_obj_set_style_text_font(wifi_icon, &lv_font_montserrat_14, 0);
+    lv_obj_align(wifi_icon, LV_ALIGN_LEFT_MID, 12, 0);
+
     /* Title */
     lv_obj_t *title = lv_label_create(bar);
-    lv_label_set_text(title, LV_SYMBOL_HOME " Dashboard");
+    lv_label_set_text(title, "Dashboard");
     lv_obj_set_style_text_color(title, lv_color_hex(COLOR_TEXT), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
-    lv_obj_align(title, LV_ALIGN_LEFT_MID, 12, 0);
+    lv_obj_align(title, LV_ALIGN_LEFT_MID, 36, 0);
 
-    /* Clock */
+    /* Clock (right) */
     clock_label = lv_label_create(bar);
     lv_label_set_text(clock_label, "--:--");
     lv_obj_set_style_text_color(clock_label, lv_color_hex(COLOR_ACCENT), 0);
     lv_obj_set_style_text_font(clock_label, &lv_font_montserrat_16, 0);
-    lv_obj_align(clock_label, LV_ALIGN_RIGHT_MID, -12, 0);
+    lv_obj_align(clock_label, LV_ALIGN_RIGHT_MID, -14, 0);
 
     /* Clock timer */
     lv_timer_create(clock_timer_cb, 1000, clock_label);
 
-    /* Grid */
+    /* ── Menu grid ── */
     lv_obj_t *grid = lv_obj_create(scr);
-    lv_obj_set_size(grid, LCD_H_RES - 24, LCD_V_RES - 64);
+    lv_obj_set_size(grid, LCD_H_RES - 20, LCD_V_RES - 70);
     lv_obj_set_style_bg_opa(grid, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(grid, 0, 0);
     lv_obj_set_style_pad_all(grid, 0, 0);
-    lv_obj_set_style_pad_gap(grid, 14, 0);
+    lv_obj_set_style_pad_gap(grid, 12, 0);
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_align(grid, LV_ALIGN_TOP_MID, 0, 48);
+    lv_obj_align(grid, LV_ALIGN_TOP_MID, 0, 52);
     lv_obj_clear_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
 
-    int btn_w = (LCD_H_RES - 24 - 28) / 3;
-    int btn_h = 100;
+    int btn_w = (LCD_H_RES - 20 - 24) / 3;
+    int btn_h = 110;
 
     for (int i = 0; i < MENU_COUNT; i++) {
         lv_obj_t *btn = lv_btn_create(grid);
         lv_obj_set_size(btn, btn_w, btn_h);
         lv_obj_set_style_bg_color(btn, lv_color_hex(COLOR_CARD), 0);
         lv_obj_set_style_bg_color(btn, lv_color_hex(COLOR_CARD_PRESS), LV_STATE_PRESSED);
-        lv_obj_set_style_radius(btn, 16, 0);
+        lv_obj_set_style_radius(btn, 18, 0);
         lv_obj_set_style_border_width(btn, 0, 0);
-        lv_obj_set_style_shadow_width(btn, 10, 0);
+        lv_obj_set_style_shadow_width(btn, 12, 0);
         lv_obj_set_style_shadow_opa(btn, LV_OPA_20, 0);
+        lv_obj_set_style_shadow_color(btn, lv_color_hex(0x000000), 0);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+
+        /* Accent line at top */
+        lv_obj_t *accent = lv_obj_create(btn);
+        lv_obj_set_size(accent, btn_w - 24, 3);
+        lv_obj_set_style_bg_color(accent, lv_color_hex(menu_items[i].color), 0);
+        lv_obj_set_style_radius(accent, 2, 0);
+        lv_obj_set_style_border_width(accent, 0, 0);
+        lv_obj_set_style_pad_all(accent, 0, 0);
+        lv_obj_clear_flag(accent, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_align(accent, LV_ALIGN_TOP_MID, 0, 12);
 
         /* Icon */
         lv_obj_t *icon = lv_label_create(btn);
         lv_label_set_text(icon, menu_items[i].symbol);
-        lv_obj_set_style_text_color(icon, menu_items[i].color, 0);
+        lv_obj_set_style_text_color(icon, lv_color_hex(menu_items[i].color), 0);
         lv_obj_set_style_text_font(icon, &lv_font_montserrat_28, 0);
-        lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 14);
+        lv_obj_align(icon, LV_ALIGN_CENTER, 0, -4);
 
         /* Label */
         lv_obj_t *lbl = lv_label_create(btn);
         lv_label_set_text(lbl, menu_items[i].label);
         lv_obj_set_style_text_color(lbl, lv_color_hex(COLOR_SUBTEXT), 0);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-        lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, -10);
+        lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, -12);
 
-        /* WiFi button event */
-        if (i == 2) {
-            lv_obj_add_event_cb(btn, wifi_btn_event_cb, LV_EVENT_CLICKED, NULL);
-        }
+        lv_obj_add_event_cb(btn, menu_btn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
     }
 
-    /* Bottom indicator */
-    lv_obj_t *ind = lv_obj_create(scr);
-    lv_obj_set_size(ind, 60, 4);
-    lv_obj_set_style_bg_color(ind, lv_color_hex(COLOR_ACCENT), 0);
+    /* ── Bottom bar ── */
+    lv_obj_t *bottom = lv_obj_create(scr);
+    lv_obj_set_size(bottom, LCD_H_RES, 24);
+    lv_obj_set_style_bg_opa(bottom, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(bottom, 0, 0);
+    lv_obj_set_style_pad_all(bottom, 0, 0);
+    lv_obj_clear_flag(bottom, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(bottom, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+    lv_obj_t *ind = lv_obj_create(bottom);
+    lv_obj_set_size(ind, 80, 4);
+    lv_obj_set_style_bg_color(ind, lv_color_hex(COLOR_ACCENT_DIM), 0);
     lv_obj_set_style_radius(ind, 2, 0);
     lv_obj_set_style_border_width(ind, 0, 0);
     lv_obj_set_style_pad_all(ind, 0, 0);
     lv_obj_clear_flag(ind, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(ind, LV_ALIGN_BOTTOM_MID, 0, -8);
+    lv_obj_center(ind);
+
+    /* Battery icon */
+    lv_obj_t *bat = lv_label_create(bottom);
+    lv_label_set_text(bat, LV_SYMBOL_BATTERY_3);
+    lv_obj_set_style_text_color(bat, lv_color_hex(COLOR_SUBTEXT), 0);
+    lv_obj_set_style_text_font(bat, &lv_font_montserrat_14, 0);
+    lv_obj_align(bat, LV_ALIGN_RIGHT_MID, -12, 0);
+
+    lv_scr_load_anim(scr, LV_SCR_LOAD_ANIM_FADE_ON, 200, 0, false);
 }
 
-/* ===== Main ===== */
+/* ══════════════════════════════════════════
+   Main entry
+   ══════════════════════════════════════════ */
 
 void app_main(void)
 {
@@ -529,7 +801,7 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_param_config(TOUCH_HOST, &i2c_conf));
     ESP_ERROR_CHECK(i2c_driver_install(TOUCH_HOST, i2c_conf.mode, 0, 0, 0));
 
-    /* TCA9554 */
+    /* TCA9554 IO expander */
     esp_io_expander_handle_t io_expander = NULL;
     ESP_ERROR_CHECK(esp_io_expander_new_i2c_tca9554(
         TOUCH_HOST, ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000, &io_expander));
@@ -634,12 +906,11 @@ void app_main(void)
 
     /* Create UI */
     if (xSemaphoreTake(lvgl_mux, portMAX_DELAY) == pdTRUE) {
-        create_menu_ui();
+        create_main_screen();
         xSemaphoreGive(lvgl_mux);
     }
 
-    /* Start WiFi */
-    wifi_init_sta();
-
-    ESP_LOGI(TAG, "System ready!");
+    /* Start WiFi (connect to saved or scan) */
+    /* Default: try to connect. User can configure via WiFi screen */
+    ESP_LOGI(TAG, "System ready! Use WiFi menu to configure network.");
 }
