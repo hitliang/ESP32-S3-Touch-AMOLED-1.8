@@ -1,6 +1,6 @@
 /*
  * main.c - ESP32-S3-Touch-AMOLED-1.8
- * v3: Visual polish + real WiFi scan + SNTP clock
+ * v4: OTA update from GitHub + visual polish + WiFi scan + SNTP clock
  */
 
 #include <stdio.h>
@@ -24,6 +24,10 @@
 #include "esp_event.h"
 #include "esp_sntp.h"
 #include "esp_netif.h"
+#include "esp_ota_ops.h"
+#include "esp_https_ota.h"
+#include "esp_app_format.h"
+#include "esp_partition.h"
 #include "nvs_flash.h"
 #include "esp_lcd_sh8601.h"
 #include "esp_lcd_touch_ft5x06.h"
@@ -56,6 +60,12 @@ static SemaphoreHandle_t lvgl_mux = NULL;
 #define LVGL_TASK_PRIORITY 2
 #define LVGL_TASK_STACK_SIZE (8 * 1024)
 
+/* ── OTA config ── */
+#define OTA_BASE_URL    "http://59.110.161.101:8868"
+#define OTA_FIRMWARE_URL OTA_BASE_URL "/api/download"
+#define OTA_VERSION_URL  OTA_BASE_URL "/api/version"
+#define FIRMWARE_VERSION "1.0.1"
+
 /* ── Color palette ── */
 #define COLOR_BG          0x0A0E1A
 #define COLOR_CARD        0x141B2D
@@ -82,7 +92,7 @@ static const menu_item_t menu_items[] = {
     {LV_SYMBOL_IMAGE,    "Clock",    0x00D4FF},
     {LV_SYMBOL_AUDIO,    "Music",    0xFF6B35},
     {LV_SYMBOL_WIFI,     "WiFi",     0x4CAF50},
-    {LV_SYMBOL_SETTINGS, "Setting",  0xFFD600},
+    {LV_SYMBOL_REFRESH,  "Update",   0x00E676},
     {LV_SYMBOL_LOOP,     "Weather",  0xE040FB},
     {LV_SYMBOL_LIST,     "More",     0x78909C},
 };
@@ -96,6 +106,13 @@ static bool time_valid = false;
 static lv_obj_t *clock_label = NULL;
 static char saved_ssid[33] = {0};
 static char saved_pass[65] = {0};
+
+/* OTA state */
+static bool ota_in_progress = false;
+static int ota_progress = 0;
+static char ota_status[64] = "";
+static lv_obj_t *ota_status_label = NULL;
+static lv_obj_t *ota_bar = NULL;
 
 /* SH8601 init commands */
 static const sh8601_lcd_init_cmd_t lcd_init_cmds[] = {
@@ -113,12 +130,14 @@ static const sh8601_lcd_init_cmd_t lcd_init_cmds[] = {
 /* Forward declarations */
 static void create_main_screen(void);
 static void create_wifi_screen(void);
+static void create_ota_screen(void);
 static void clock_timer_cb(lv_timer_t *timer);
 static void wifi_init_sta(const char *ssid, const char *pass);
 static void sntp_init_and_sync(void);
 static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data);
 static void wifi_scan_task(void *arg);
 static void scan_btn_handler(lv_event_t *e);
+static void ota_task(void *arg);
 
 /* ══════════════════════════════════════════
    LVGL porting
@@ -202,7 +221,6 @@ static bool wifi_initialized = false;
 
 static void wifi_init_sta(const char *ssid, const char *pass)
 {
-    /* Save credentials */
     if (ssid) strncpy(saved_ssid, ssid, sizeof(saved_ssid) - 1);
     if (pass) strncpy(saved_pass, pass, sizeof(saved_pass) - 1);
 
@@ -216,7 +234,6 @@ static void wifi_init_sta(const char *ssid, const char *pass)
         esp_netif_create_default_wifi_sta();
         wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
         ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
         ESP_ERROR_CHECK(esp_event_handler_instance_register(
             WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL, NULL));
         ESP_ERROR_CHECK(esp_event_handler_instance_register(
@@ -248,9 +265,6 @@ static void sntp_init_and_sync(void)
     sntp_initialized = true;
     setenv("TZ", "CST-8", 1);
     tzset();
-
-    /* Wait for time sync in background */
-    xTaskCreatePinnedToCore((void (*)(void *))NULL, "sntp_wait", 2048, NULL, 1, NULL, 0);
 }
 
 /* ══════════════════════════════════════════
@@ -267,19 +281,88 @@ static void clock_timer_cb(lv_timer_t *timer)
     time(&now);
     localtime_r(&now, &ti);
 
-    /* Check if time is valid (year >= 2024) */
     if (ti.tm_year >= (2024 - 1900)) {
         time_valid = true;
         char buf[16];
         strftime(buf, sizeof(buf), "%H:%M", &ti);
         lv_label_set_text(label, buf);
     } else {
-        /* Still waiting for SNTP */
         if (wifi_connected) {
             lv_label_set_text(label, "sync..");
         } else {
             lv_label_set_text(label, "--:--");
         }
+    }
+}
+
+/* ══════════════════════════════════════════
+   OTA Update
+   ══════════════════════════════════════════ */
+
+/* HTTP event handler for OTA */
+static esp_err_t ota_http_event_handler(esp_http_client_event_t *evt)
+{
+    return ESP_OK;
+}
+
+static void ota_progress_cb(esp_https_ota_handle_t https_ota_handle, int pct)
+{
+    ota_progress = pct;
+}
+
+static void ota_task(void *arg)
+{
+    if (!wifi_connected) {
+        snprintf(ota_status, sizeof(ota_status), "No WiFi connection!");
+        ota_in_progress = false;
+        vTaskDelete(NULL);
+        return;
+    }
+
+    snprintf(ota_status, sizeof(ota_status), "Checking for updates...");
+    ota_progress = 0;
+
+    ESP_LOGI(TAG, "Starting OTA from %s", OTA_FIRMWARE_URL);
+
+    esp_http_client_config_t config = {
+        .url = OTA_FIRMWARE_URL,
+        .cert_pem = NULL,  /* Skip cert verification for GitHub raw */
+        .timeout_ms = 30000,
+        .keep_alive_enable = true,
+        .skip_cert_common_name_check = true,
+    };
+
+    esp_https_ota_config_t ota_config = {
+        .http_config = &config,
+    };
+
+    snprintf(ota_status, sizeof(ota_status), "Downloading firmware...");
+    ota_progress = 5;
+
+    esp_err_t ret = esp_https_ota(&ota_config);
+    if (ret == ESP_OK) {
+        snprintf(ota_status, sizeof(ota_status), "Update complete! Rebooting...");
+        ota_progress = 100;
+        ESP_LOGI(TAG, "OTA successful, rebooting...");
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        esp_restart();
+    } else {
+        snprintf(ota_status, sizeof(ota_status), "Update failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "OTA failed: %s", esp_err_to_name(ret));
+        ota_in_progress = false;
+    }
+
+    vTaskDelete(NULL);
+}
+
+/* OTA progress update timer */
+static void ota_timer_cb(lv_timer_t *timer)
+{
+    if (ota_status_label) {
+        lv_label_set_text(ota_status_label, ota_status);
+    }
+    if (ota_bar) {
+        lv_bar_set_value(ota_bar, ota_progress, LV_ANIM_ON);
     }
 }
 
@@ -294,7 +377,6 @@ typedef struct {
     int8_t rssi[MAX_SCAN_RESULTS];
     uint8_t authmode[MAX_SCAN_RESULTS];
     int count;
-    lv_obj_t *list_obj;
 } wifi_scan_data_t;
 
 static wifi_scan_data_t scan_data = {0};
@@ -316,7 +398,6 @@ static void pwd_connect_cb(lv_event_t *e)
     if (pwd_kb) { lv_obj_del(pwd_kb); pwd_kb = NULL; }
     if (pwd_dialog) { lv_obj_del(pwd_dialog); pwd_dialog = NULL; }
 
-    /* Reconnect with new credentials */
     esp_wifi_disconnect();
     vTaskDelay(pdMS_TO_TICKS(300));
 
@@ -329,11 +410,9 @@ static void pwd_connect_cb(lv_event_t *e)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
     esp_wifi_connect();
 
-    /* Save */
     strncpy(saved_ssid, selected_ssid, sizeof(saved_ssid) - 1);
     if (pass) strncpy(saved_pass, pass, sizeof(saved_pass) - 1);
 
-    /* Go back to main screen */
     create_main_screen();
 }
 
@@ -347,7 +426,6 @@ static void show_password_dialog(const char *ssid)
 {
     strncpy(selected_ssid, ssid, sizeof(selected_ssid) - 1);
 
-    /* Dim overlay */
     lv_obj_t *overlay = lv_obj_create(lv_layer_top());
     lv_obj_set_size(overlay, LCD_H_RES, LCD_V_RES);
     lv_obj_set_style_bg_color(overlay, lv_color_hex(0x000000), 0);
@@ -357,7 +435,6 @@ static void show_password_dialog(const char *ssid)
     lv_obj_set_style_pad_all(overlay, 0, 0);
     lv_obj_clear_flag(overlay, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Dialog */
     pwd_dialog = lv_obj_create(overlay);
     lv_obj_set_size(pwd_dialog, 320, 160);
     lv_obj_center(pwd_dialog);
@@ -367,7 +444,6 @@ static void show_password_dialog(const char *ssid)
     lv_obj_set_style_pad_all(pwd_dialog, 12, 0);
     lv_obj_clear_flag(pwd_dialog, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Title */
     lv_obj_t *title = lv_label_create(pwd_dialog);
     char title_txt[64];
     snprintf(title_txt, sizeof(title_txt), LV_SYMBOL_WIFI " %s", ssid);
@@ -376,7 +452,6 @@ static void show_password_dialog(const char *ssid)
     lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    /* Password input */
     pwd_ta = lv_textarea_create(pwd_dialog);
     lv_textarea_set_one_line(pwd_ta, true);
     lv_textarea_set_password_mode(pwd_ta, true);
@@ -387,7 +462,6 @@ static void show_password_dialog(const char *ssid)
     lv_obj_set_style_text_color(pwd_ta, lv_color_hex(COLOR_TEXT), 0);
     lv_obj_set_style_border_color(pwd_ta, lv_color_hex(COLOR_ACCENT), LV_STATE_FOCUSED);
 
-    /* Buttons */
     lv_obj_t *btn_cancel = lv_btn_create(pwd_dialog);
     lv_obj_set_size(btn_cancel, 130, 36);
     lv_obj_set_style_bg_color(btn_cancel, lv_color_hex(COLOR_CARD_HOVER), 0);
@@ -412,17 +486,13 @@ static void show_password_dialog(const char *ssid)
     lv_obj_set_style_text_color(ol, lv_color_hex(COLOR_BG), 0);
     lv_obj_center(ol);
 
-    /* Keyboard */
     pwd_kb = lv_keyboard_create(lv_layer_top());
     lv_keyboard_set_textarea(pwd_kb, pwd_ta);
-    /* Move dialog up so keyboard doesn't cover it */
     lv_obj_align(pwd_dialog, LV_ALIGN_TOP_MID, 0, 20);
 }
 
-/* ── WiFi scan ── */
 static void wifi_scan_task(void *arg)
 {
-    /* Initialize WiFi for scanning */
     static bool scan_netif_init = false;
     if (!scan_netif_init) {
         ESP_ERROR_CHECK(esp_netif_init());
@@ -434,18 +504,13 @@ static void wifi_scan_task(void *arg)
     esp_wifi_init(&cfg);
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_start();
-
     vTaskDelay(pdMS_TO_TICKS(500));
 
     ESP_LOGI(TAG, "Starting WiFi scan...");
     wifi_scan_config_t scan_conf = {
-        .ssid = NULL,
-        .bssid = NULL,
-        .channel = 0,
-        .show_hidden = false,
+        .ssid = NULL, .bssid = NULL, .channel = 0, .show_hidden = false,
         .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-        .scan_time.active.min = 100,
-        .scan_time.active.max = 300,
+        .scan_time.active.min = 100, .scan_time.active.max = 300,
     };
     esp_wifi_scan_start(&scan_conf, true);
 
@@ -461,11 +526,144 @@ static void wifi_scan_task(void *arg)
         ESP_LOGI(TAG, "  Found: %s (%d dBm)", ap_records[i].ssid, ap_records[i].rssi);
     }
 
-    /* Deinit scan WiFi so we can reconnect properly later */
     esp_wifi_disconnect();
     esp_wifi_stop();
     esp_wifi_deinit();
     vTaskDelete(NULL);
+}
+
+/* ══════════════════════════════════════════
+   UI: OTA Screen
+   ══════════════════════════════════════════ */
+
+static void ota_back_cb(lv_event_t *e)
+{
+    if (!ota_in_progress) {
+        create_main_screen();
+    }
+}
+
+static void ota_start_cb(lv_event_t *e)
+{
+    if (ota_in_progress) return;
+    if (!wifi_connected) {
+        snprintf(ota_status, sizeof(ota_status), "Connect to WiFi first!");
+        return;
+    }
+    ota_in_progress = true;
+    snprintf(ota_status, sizeof(ota_status), "Starting update...");
+    xTaskCreatePinnedToCore(ota_task, "ota", 8192, NULL, 5, NULL, 0);
+}
+
+static void create_ota_screen(void)
+{
+    lv_obj_t *scr = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(scr, lv_color_hex(COLOR_BG), 0);
+    lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+
+    /* ── Top bar ── */
+    lv_obj_t *topbar = lv_obj_create(scr);
+    lv_obj_set_size(topbar, LCD_H_RES, 48);
+    lv_obj_set_style_bg_color(topbar, lv_color_hex(COLOR_STATUSBAR), 0);
+    lv_obj_set_style_radius(topbar, 0, 0);
+    lv_obj_set_style_border_width(topbar, 0, 0);
+    lv_obj_set_style_pad_all(topbar, 0, 0);
+    lv_obj_clear_flag(topbar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(topbar, LV_ALIGN_TOP_MID, 0, 0);
+
+    lv_obj_t *back_btn = lv_btn_create(topbar);
+    lv_obj_set_size(back_btn, 64, 34);
+    lv_obj_set_style_bg_opa(back_btn, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(back_btn, 0, 0);
+    lv_obj_set_style_shadow_width(back_btn, 0, 0);
+    lv_obj_set_style_pad_all(back_btn, 0, 0);
+    lv_obj_align(back_btn, LV_ALIGN_LEFT_MID, 8, 0);
+    lv_obj_add_event_cb(back_btn, ota_back_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *bl = lv_label_create(back_btn);
+    lv_label_set_text(bl, LV_SYMBOL_LEFT " Back");
+    lv_obj_set_style_text_color(bl, lv_color_hex(COLOR_ACCENT), 0);
+    lv_obj_set_style_text_font(bl, &lv_font_montserrat_14, 0);
+    lv_obj_center(bl);
+
+    lv_obj_t *title = lv_label_create(topbar);
+    lv_label_set_text(title, "System Update");
+    lv_obj_set_style_text_color(title, lv_color_hex(COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_center(title);
+
+    /* ── Version info card ── */
+    lv_obj_t *ver_card = lv_obj_create(scr);
+    lv_obj_set_size(ver_card, LCD_H_RES - 16, 100);
+    lv_obj_set_style_bg_color(ver_card, lv_color_hex(COLOR_CARD), 0);
+    lv_obj_set_style_radius(ver_card, 12, 0);
+    lv_obj_set_style_border_width(ver_card, 0, 0);
+    lv_obj_set_style_pad_all(ver_card, 12, 0);
+    lv_obj_clear_flag(ver_card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(ver_card, LV_ALIGN_TOP_MID, 0, 56);
+
+    lv_obj_t *ver_icon = lv_label_create(ver_card);
+    lv_label_set_text(ver_icon, LV_SYMBOL_DOWNLOAD);
+    lv_obj_set_style_text_color(ver_icon, lv_color_hex(COLOR_ACCENT), 0);
+    lv_obj_set_style_text_font(ver_icon, &lv_font_montserrat_28, 0);
+    lv_obj_align(ver_icon, LV_ALIGN_LEFT_MID, 12, 0);
+
+    lv_obj_t *ver_info = lv_label_create(ver_card);
+    char ver_txt[128];
+    snprintf(ver_txt, sizeof(ver_txt),
+        "Current: v%s\nSource: GitHub\nRepo: hitliang/AMOLED-1.8", FIRMWARE_VERSION);
+    lv_label_set_text(ver_info, ver_txt);
+    lv_obj_set_style_text_color(ver_info, lv_color_hex(COLOR_TEXT), 0);
+    lv_obj_set_style_text_font(ver_info, &lv_font_montserrat_14, 0);
+    lv_obj_align(ver_info, LV_ALIGN_LEFT_MID, 52, 0);
+
+    /* ── Progress bar ── */
+    ota_bar = lv_bar_create(scr);
+    lv_obj_set_size(ota_bar, LCD_H_RES - 16, 16);
+    lv_obj_align(ota_bar, LV_ALIGN_TOP_MID, 0, 170);
+    lv_bar_set_range(ota_bar, 0, 100);
+    lv_bar_set_value(ota_bar, 0, LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(ota_bar, lv_color_hex(COLOR_CARD), LV_PART_MAIN);
+    lv_obj_set_style_radius(ota_bar, 8, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(ota_bar, lv_color_hex(COLOR_ACCENT), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(ota_bar, 8, LV_PART_INDICATOR);
+
+    /* ── Status label ── */
+    ota_status_label = lv_label_create(scr);
+    lv_label_set_text(ota_status_label, ota_status[0] ? ota_status : "Tap Update to check GitHub");
+    lv_obj_set_style_text_color(ota_status_label, lv_color_hex(COLOR_SUBTEXT), 0);
+    lv_obj_set_style_text_font(ota_status_label, &lv_font_montserrat_14, 0);
+    lv_obj_align(ota_status_label, LV_ALIGN_TOP_MID, 0, 200);
+
+    /* ── Update button ── */
+    lv_obj_t *update_btn = lv_btn_create(scr);
+    lv_obj_set_size(update_btn, LCD_H_RES - 16, 48);
+    lv_obj_set_style_bg_color(update_btn, lv_color_hex(COLOR_SUCCESS), 0);
+    lv_obj_set_style_radius(update_btn, 12, 0);
+    lv_obj_set_style_border_width(update_btn, 0, 0);
+    lv_obj_set_style_shadow_width(update_btn, 0, 0);
+    lv_obj_align(update_btn, LV_ALIGN_TOP_MID, 0, 240);
+    lv_obj_add_event_cb(update_btn, ota_start_cb, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *btn_lbl = lv_label_create(update_btn);
+    lv_label_set_text(btn_lbl, LV_SYMBOL_DOWNLOAD " Check & Update");
+    lv_obj_set_style_text_color(btn_lbl, lv_color_hex(COLOR_BG), 0);
+    lv_obj_set_style_text_font(btn_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_center(btn_lbl);
+
+    /* ── Info text ── */
+    lv_obj_t *info = lv_label_create(scr);
+    lv_label_set_text(info,
+        "Downloads latest firmware from\n"
+        "GitHub and installs it.\n\n"
+        "Device will reboot after update.");
+    lv_obj_set_style_text_color(info, lv_color_hex(COLOR_SUBTEXT), 0);
+    lv_obj_set_style_text_font(info, &lv_font_montserrat_14, 0);
+    lv_obj_align(info, LV_ALIGN_TOP_MID, 0, 310);
+
+    /* Timer to update progress */
+    lv_timer_create(ota_timer_cb, 500, NULL);
+
+    lv_scr_load_anim(scr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
 }
 
 /* ══════════════════════════════════════════
@@ -489,7 +687,6 @@ static void create_wifi_screen(void)
     lv_obj_set_style_bg_color(scr, lv_color_hex(COLOR_BG), 0);
     lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* ── Top bar ── */
     lv_obj_t *topbar = lv_obj_create(scr);
     lv_obj_set_size(topbar, LCD_H_RES, 48);
     lv_obj_set_style_bg_color(topbar, lv_color_hex(COLOR_STATUSBAR), 0);
@@ -499,7 +696,6 @@ static void create_wifi_screen(void)
     lv_obj_clear_flag(topbar, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(topbar, LV_ALIGN_TOP_MID, 0, 0);
 
-    /* Back button */
     lv_obj_t *back_btn = lv_btn_create(topbar);
     lv_obj_set_size(back_btn, 64, 34);
     lv_obj_set_style_bg_opa(back_btn, LV_OPA_TRANSP, 0);
@@ -514,14 +710,12 @@ static void create_wifi_screen(void)
     lv_obj_set_style_text_font(back_lbl, &lv_font_montserrat_14, 0);
     lv_obj_center(back_lbl);
 
-    /* Title */
     lv_obj_t *title = lv_label_create(topbar);
     lv_label_set_text(title, "WiFi Settings");
     lv_obj_set_style_text_color(title, lv_color_hex(COLOR_TEXT), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
     lv_obj_center(title);
 
-    /* ── Connection status ── */
     lv_obj_t *status_card = lv_obj_create(scr);
     lv_obj_set_size(status_card, LCD_H_RES - 16, 48);
     lv_obj_set_style_bg_color(status_card, lv_color_hex(COLOR_CARD), 0);
@@ -549,7 +743,6 @@ static void create_wifi_screen(void)
     lv_obj_set_style_text_font(status_txt, &lv_font_montserrat_14, 0);
     lv_obj_align(status_txt, LV_ALIGN_LEFT_MID, 44, 0);
 
-    /* ── Scan button ── */
     lv_obj_t *scan_btn = lv_btn_create(scr);
     lv_obj_set_size(scan_btn, LCD_H_RES - 16, 40);
     lv_obj_set_style_bg_color(scan_btn, lv_color_hex(COLOR_ACCENT), 0);
@@ -562,11 +755,8 @@ static void create_wifi_screen(void)
     lv_obj_set_style_text_color(scan_lbl, lv_color_hex(COLOR_BG), 0);
     lv_obj_set_style_text_font(scan_lbl, &lv_font_montserrat_14, 0);
     lv_obj_center(scan_lbl);
-
-    /* Scan click: run scan then rebuild WiFi screen */
     lv_obj_add_event_cb(scan_btn, scan_btn_handler, LV_EVENT_CLICKED, NULL);
 
-    /* ── Network list ── */
     lv_obj_t *list = lv_list_create(scr);
     lv_obj_set_size(list, LCD_H_RES - 16, LCD_V_RES - 170);
     lv_obj_set_style_bg_color(list, lv_color_hex(COLOR_CARD), 0);
@@ -581,7 +771,6 @@ static void create_wifi_screen(void)
         for (int i = 0; i < scan_data.count; i++) {
             char txt[80];
             snprintf(txt, sizeof(txt), LV_SYMBOL_WIFI " %s", scan_data.ssids[i]);
-
             lv_obj_t *btn = lv_list_add_btn(list, NULL, txt);
             lv_obj_set_style_text_font(btn, &lv_font_montserrat_14, 0);
             lv_obj_set_style_text_color(btn, lv_color_hex(COLOR_TEXT), 0);
@@ -590,7 +779,6 @@ static void create_wifi_screen(void)
             lv_obj_set_style_bg_color(btn, lv_color_hex(COLOR_CARD_PRESS), LV_STATE_PRESSED);
             lv_obj_set_style_radius(btn, 8, 0);
 
-            /* Signal strength text */
             lv_obj_t *sig = lv_label_create(btn);
             char sig_txt[24];
             snprintf(sig_txt, sizeof(sig_txt), "%ddBm %s",
@@ -614,12 +802,9 @@ static void create_wifi_screen(void)
     lv_scr_load_anim(scr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 300, 0, false);
 }
 
-/* Scan button handler */
 static void scan_btn_handler(lv_event_t *e)
 {
-    /* Run scan in task */
     xTaskCreatePinnedToCore(wifi_scan_task, "wifi_scan", 4096, NULL, 1, NULL, 0);
-    /* Wait then rebuild */
     vTaskDelay(pdMS_TO_TICKS(3000));
     create_wifi_screen();
 }
@@ -635,10 +820,12 @@ static void menu_btn_cb(lv_event_t *e)
 
     switch (idx) {
         case 2: /* WiFi */
-            /* Scan first, then show */
             xTaskCreatePinnedToCore(wifi_scan_task, "wifi_scan", 4096, NULL, 1, NULL, 0);
             vTaskDelay(pdMS_TO_TICKS(3000));
             create_wifi_screen();
+            break;
+        case 3: /* Update (OTA) */
+            create_ota_screen();
             break;
         default:
             break;
@@ -661,7 +848,6 @@ static void create_main_screen(void)
     lv_obj_clear_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(bar, LV_ALIGN_TOP_MID, 0, 0);
 
-    /* WiFi indicator (left) */
     lv_obj_t *wifi_icon = lv_label_create(bar);
     lv_label_set_text(wifi_icon, wifi_connected ? LV_SYMBOL_WIFI : LV_SYMBOL_CLOSE);
     lv_obj_set_style_text_color(wifi_icon,
@@ -669,21 +855,18 @@ static void create_main_screen(void)
     lv_obj_set_style_text_font(wifi_icon, &lv_font_montserrat_14, 0);
     lv_obj_align(wifi_icon, LV_ALIGN_LEFT_MID, 12, 0);
 
-    /* Title */
     lv_obj_t *title = lv_label_create(bar);
     lv_label_set_text(title, "Dashboard");
     lv_obj_set_style_text_color(title, lv_color_hex(COLOR_TEXT), 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
     lv_obj_align(title, LV_ALIGN_LEFT_MID, 36, 0);
 
-    /* Clock (right) */
     clock_label = lv_label_create(bar);
     lv_label_set_text(clock_label, "--:--");
     lv_obj_set_style_text_color(clock_label, lv_color_hex(COLOR_ACCENT), 0);
     lv_obj_set_style_text_font(clock_label, &lv_font_montserrat_16, 0);
     lv_obj_align(clock_label, LV_ALIGN_RIGHT_MID, -14, 0);
 
-    /* Clock timer */
     lv_timer_create(clock_timer_cb, 1000, clock_label);
 
     /* ── Menu grid ── */
@@ -713,7 +896,6 @@ static void create_main_screen(void)
         lv_obj_set_style_shadow_color(btn, lv_color_hex(0x000000), 0);
         lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
 
-        /* Accent line at top */
         lv_obj_t *accent = lv_obj_create(btn);
         lv_obj_set_size(accent, btn_w - 24, 3);
         lv_obj_set_style_bg_color(accent, lv_color_hex(menu_items[i].color), 0);
@@ -723,14 +905,12 @@ static void create_main_screen(void)
         lv_obj_clear_flag(accent, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_align(accent, LV_ALIGN_TOP_MID, 0, 12);
 
-        /* Icon */
         lv_obj_t *icon = lv_label_create(btn);
         lv_label_set_text(icon, menu_items[i].symbol);
         lv_obj_set_style_text_color(icon, lv_color_hex(menu_items[i].color), 0);
         lv_obj_set_style_text_font(icon, &lv_font_montserrat_28, 0);
         lv_obj_align(icon, LV_ALIGN_CENTER, 0, -4);
 
-        /* Label */
         lv_obj_t *lbl = lv_label_create(btn);
         lv_label_set_text(lbl, menu_items[i].label);
         lv_obj_set_style_text_color(lbl, lv_color_hex(COLOR_SUBTEXT), 0);
@@ -758,7 +938,6 @@ static void create_main_screen(void)
     lv_obj_clear_flag(ind, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_center(ind);
 
-    /* Battery icon */
     lv_obj_t *bat = lv_label_create(bottom);
     lv_label_set_text(bat, LV_SYMBOL_BATTERY_3);
     lv_obj_set_style_text_color(bat, lv_color_hex(COLOR_SUBTEXT), 0);
@@ -787,6 +966,10 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    /* Log current partition info */
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    ESP_LOGI(TAG, "Running partition: %s (label=%s)", running->label, running->label);
 
     /* I2C */
     ESP_LOGI(TAG, "Initialize I2C bus");
@@ -910,7 +1093,5 @@ void app_main(void)
         xSemaphoreGive(lvgl_mux);
     }
 
-    /* Start WiFi (connect to saved or scan) */
-    /* Default: try to connect. User can configure via WiFi screen */
-    ESP_LOGI(TAG, "System ready! Use WiFi menu to configure network.");
+    ESP_LOGI(TAG, "System ready! Firmware v%s", FIRMWARE_VERSION);
 }
