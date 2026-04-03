@@ -19,7 +19,7 @@ esp_err_t display_init(void);
 /**
  * @brief 获取 LVGL display 对象 (LVGL 9)
  */
-lv_display_t *display_get(void);
+lv_disp_t *display_get(void);
 
 /**
  * @brief 设置屏幕亮度 (0-255)

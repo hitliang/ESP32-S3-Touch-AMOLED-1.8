@@ -1,9 +1,9 @@
 /*
- * ui.c - 空实现
+ * ui.c - 已迁移到 ui_framework.c
+ * 此文件保留用于兼容性
  */
 
 #include "ui.h"
 
-void ui_create(void) {}
-void ui_update_time(const char *t) { (void)t; }
-void ui_update_wifi_status(bool c, const char *s) { (void)c; (void)s; }
+// 所有 UI 功能已迁移到 ui_framework.c
+// 这些函数保留空实现以避免编译错误

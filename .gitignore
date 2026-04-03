@@ -1,0 +1,22 @@
+# Build directory
+build/
+
+# Managed components (downloaded dependencies)
+managed_components/
+
+# SDK config
+sdkconfig
+sdkconfig.old
+
+# Dependencies lock
+dependencies.lock
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Log files
+*.log

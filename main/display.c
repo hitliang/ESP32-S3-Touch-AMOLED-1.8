@@ -18,7 +18,7 @@
 
 static const char *TAG = "display";
 
-static lv_display_t *lvgl_disp = NULL;
+static lv_disp_t *lvgl_disp = NULL;
 static esp_lcd_panel_io_handle_t panel_io = NULL;
 
 // SH8601 命令
@@ -108,7 +108,6 @@ esp_err_t display_init(void)
         },
         .flags = {
             .buff_dma = true,
-            .swap_bytes = true,
         },
     };
 
@@ -122,7 +121,7 @@ esp_err_t display_init(void)
     return ESP_OK;
 }
 
-lv_display_t *display_get(void)
+lv_disp_t *display_get(void)
 {
     return lvgl_disp;
 }

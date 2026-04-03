@@ -1,25 +1,19 @@
 /*
- * ui.h - LVGL 用户界面
+ * ui.h - UI 框架（已迁移到 ui_framework.h）
+ * 此文件保留用于兼容性
  */
 
 #pragma once
 
-#include "lvgl.h"
+#include "ui_framework.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/**
- * @brief 创建主界面
- */
-void ui_create(void);
-
-/**
- * @brief 更新状态栏信息
- */
-void ui_update_time(const char *time_str);
-void ui_update_wifi_status(bool connected, const char *ssid);
+// 所有 UI 函数已迁移到 ui_framework.h
+// 使用 ui_framework_init() 替代 ui_create()
+// 使用 ui_update_time(hour, minute) 替代 ui_update_time(time_str)
 
 #ifdef __cplusplus
 }
