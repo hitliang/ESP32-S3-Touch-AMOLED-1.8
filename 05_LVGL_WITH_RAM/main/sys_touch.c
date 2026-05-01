@@ -11,11 +11,15 @@ static const char *TAG = "sys_touch";
 #define LCD_H_RES         368
 #define LCD_V_RES         448
 
+#define SWIPE_THRESHOLD   40   /* minimum pixels for a swipe */
+
 static esp_lcd_touch_handle_t tp = NULL;
 
-/* Exposed for swipe detection in sys_display */
-int g_debug_touch_x = -1, g_debug_touch_y = -1;
-bool g_debug_touch_pressed = false;
+/* Manual swipe detection state */
+static bool  swipe_ready = false;
+static lv_dir_t swipe_dir = LV_DIR_NONE;
+static int   touch_start_x = 0, touch_start_y = 0;
+static int   touch_last_x = 0, touch_last_y = 0;
 
 static void lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
 {
@@ -24,15 +28,30 @@ static void lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
     esp_lcd_touch_read_data(tp);
     bool pressed = esp_lcd_touch_get_coordinates(tp, &tp_x, &tp_y, NULL, &tp_cnt, 1);
 
-    g_debug_touch_x = pressed ? tp_x : -1;
-    g_debug_touch_y = pressed ? tp_y : -1;
-    g_debug_touch_pressed = pressed;
-
     if (pressed && tp_cnt > 0) {
+        /* Touch pressed */
+        if (data->state != LV_INDEV_STATE_PRESSED) {
+            /* Just pressed — capture start position */
+            touch_start_x = tp_x;
+            touch_start_y = tp_y;
+        }
+        touch_last_x = tp_x;
+        touch_last_y = tp_y;
         data->point.x = tp_x;
         data->point.y = tp_y;
         data->state = LV_INDEV_STATE_PRESSED;
     } else {
+        /* Touch released — detect swipe */
+        if (data->state == LV_INDEV_STATE_PRESSED) {
+            int dx = touch_last_x - touch_start_x;
+            int dy = touch_last_y - touch_start_y;
+
+            if (abs(dy) > SWIPE_THRESHOLD && abs(dy) > abs(dx)) {
+                swipe_dir = (dy < 0) ? LV_DIR_TOP : LV_DIR_BOTTOM;
+                swipe_ready = true;
+                ESP_LOGD(TAG, "Swipe %s", (dy < 0) ? "UP" : "DOWN");
+            }
+        }
         data->state = LV_INDEV_STATE_RELEASED;
     }
 }
@@ -67,4 +86,14 @@ void sys_touch_init(lv_disp_t *disp)
 esp_lcd_touch_handle_t sys_touch_get_handle(void)
 {
     return tp;
+}
+
+bool sys_touch_get_swipe(lv_dir_t *dir)
+{
+    if (swipe_ready) {
+        *dir = swipe_dir;
+        swipe_ready = false;
+        return true;
+    }
+    return false;
 }

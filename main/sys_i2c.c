@@ -5,7 +5,7 @@
 static const char *TAG = "sys_i2c";
 
 #define I2C_HOST          I2C_NUM_0
-#define I2C_FREQ_HZ       400000
+#define I2C_FREQ_HZ       200000
 #define PIN_TOUCH_SCL     GPIO_NUM_14
 #define PIN_TOUCH_SDA     GPIO_NUM_15
 

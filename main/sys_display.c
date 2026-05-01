@@ -140,21 +140,62 @@ static void lvgl_tick_cb(void *arg)
 }
 
 /* ------------------------------------------------------------------ */
-/*  LVGL port task                                                     */
+/*  LVGL port task — also handles swipe detection                       */
 /* ------------------------------------------------------------------ */
 static void lvgl_port_task(void *arg)
 {
     uint32_t task_delay_ms = 500;
+
+    /* Swipe detection: track touch position delta */
+    int swipe_start_x = -1, swipe_start_y = -1;
+    int last_tx = -1, last_ty = -1;
+    bool swipe_fired = false;
+    int stable_count = 0;
+
     while (1) {
         if (sys_display_lock(-1)) {
             task_delay_ms = lv_timer_handler();
 
-            /* Check for manual swipe */
-            if (gesture_cb) {
-                lv_dir_t dir;
-                if (sys_touch_get_swipe(&dir)) {
-                    gesture_cb(dir);
+            int tx = g_debug_touch_x;
+            int ty = g_debug_touch_y;
+            bool pressed = g_debug_touch_pressed;
+
+            if (pressed && tx >= 0) {
+                /* Detect new touch: big position jump or just starting */
+                if (last_tx < 0 || abs(tx - last_tx) > 100 || abs(ty - last_ty) > 100) {
+                    swipe_start_x = tx;
+                    swipe_start_y = ty;
+                    swipe_fired = false;
+                    stable_count = 0;
                 }
+
+                /* Stable counter (for auto-reset) */
+                if (abs(tx - last_tx) < 3 && abs(ty - last_ty) < 3) {
+                    stable_count++;
+                    if (stable_count > 30) {
+                        /* Reset after ~120ms of stability */
+                        swipe_start_x = tx;
+                        swipe_start_y = ty;
+                        swipe_fired = false;
+                        stable_count = 0;
+                    }
+                } else {
+                    stable_count = 0;
+                }
+
+                /* Swipe detection */
+                if (!swipe_fired && swipe_start_x >= 0) {
+                    int dy = ty - swipe_start_y;
+                    if (dy < -40) {
+                        if (gesture_cb) gesture_cb(LV_DIR_TOP);
+                        swipe_fired = true;
+                    } else if (dy > 40) {
+                        if (gesture_cb) gesture_cb(LV_DIR_BOTTOM);
+                        swipe_fired = true;
+                    }
+                }
+
+                last_tx = tx; last_ty = ty;
             }
 
             sys_display_unlock();

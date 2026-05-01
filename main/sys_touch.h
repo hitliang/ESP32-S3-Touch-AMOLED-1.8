@@ -9,7 +9,11 @@ extern "C" {
 
 void sys_touch_init(lv_disp_t *disp);
 esp_lcd_touch_handle_t sys_touch_get_handle(void);
-bool sys_touch_get_swipe(lv_dir_t *dir);
+
+/* Raw touch state, exposed for swipe detection */
+extern int  g_debug_touch_x;
+extern int  g_debug_touch_y;
+extern bool g_debug_touch_pressed;
 
 #ifdef __cplusplus
 }
