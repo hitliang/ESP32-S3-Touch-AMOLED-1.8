@@ -37,8 +37,8 @@ static void on_app_tapped(lv_event_t *e)
 
 lv_obj_t *ui_menu_create(lv_obj_t *scr)
 {
-    /* Dark background */
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x16162a), 0);
+    /* True AMOLED black background */
+    lv_obj_set_style_bg_color(scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
     /* Title */
