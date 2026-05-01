@@ -1,6 +1,12 @@
 #include "sys_i2c.h"
 #include "sys_display.h"
 #include "sys_touch.h"
+#include "sys_battery.h"
+#include "sys_wifi.h"
+#include "sys_imu.h"
+#include "sys_button.h"
+#include "sys_config.h"
+#include "sys_sdcard.h"
 #include "app_framework.h"
 #include "ui_home.h"
 #include "esp_log.h"
@@ -16,6 +22,9 @@ static void gesture_handler(lv_dir_t dir)
 
 static void home_update_timer_cb(void *arg)
 {
+    /* Update system data every second */
+    sys_battery_update();
+
     if (app_framework_get_state() == NAV_STATE_HOME) {
         if (sys_display_lock(100)) {
             ui_home_update();
@@ -28,7 +37,9 @@ void app_main(void)
 {
     esp_log_level_set("lcd_panel.io.i2c", ESP_LOG_NONE);
     esp_log_level_set("FT5x06", ESP_LOG_NONE);
+    esp_log_level_set("wifi", ESP_LOG_WARN);
 
+    /* NVS must be first (needed by WiFi) */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
@@ -37,17 +48,29 @@ void app_main(void)
 
     ESP_LOGI(TAG, "=== Boot ===");
 
+    /* 1. I2C bus + power sequencing */
     sys_i2c_init();
+
+    /* 2. Display + LVGL */
     sys_display_init();
     sys_touch_init(sys_display_get_disp());
-
-    /* Register gesture handler */
     sys_display_set_gesture_cb(gesture_handler);
 
+    /* 3. UI framework */
     app_framework_init();
     app_framework_go_home();
 
-    /* Periodic home screen update (every 1s) */
+    /* 4. System services (non-blocking) */
+    sys_config_init();
+    sys_battery_init();
+    sys_imu_init();
+    sys_sdcard_init();
+    sys_button_init();
+
+    /* 5. WiFi (async, starts connecting in background) */
+    sys_wifi_init();
+
+    /* 6. Periodic home update (every 1 second) */
     const esp_timer_create_args_t timer_args = {
         .callback = home_update_timer_cb,
         .name = "home_update",

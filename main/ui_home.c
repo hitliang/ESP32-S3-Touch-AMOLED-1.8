@@ -1,4 +1,6 @@
 #include "ui_home.h"
+#include "sys_battery.h"
+#include "sys_wifi.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include <time.h>
@@ -76,11 +78,27 @@ void ui_home_update(void)
                               tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday);
     }
 
-    /* Placeholder battery / wifi values - will be wired to real data in Phase 2 */
+    /* Battery */
     if (lbl_batt) {
-        lv_label_set_text(lbl_batt, LV_SYMBOL_BATTERY_FULL " 85%");
+        uint8_t pct = sys_battery_get_percent();
+        lv_label_set_text_fmt(lbl_batt, "%s %d%%",
+            pct > 20 ? LV_SYMBOL_BATTERY_FULL :
+            pct > 10 ? LV_SYMBOL_BATTERY_2 : LV_SYMBOL_BATTERY_EMPTY,
+            pct);
     }
+
+    /* WiFi */
     if (lbl_wifi) {
-        lv_label_set_text(lbl_wifi, LV_SYMBOL_WIFI " OK");
+        wifi_status_t ws = sys_wifi_get_status();
+        if (ws == WIFI_CONNECTED && sys_time_is_synced()) {
+            lv_label_set_text(lbl_wifi, LV_SYMBOL_WIFI);
+            lv_obj_set_style_text_color(lbl_wifi, lv_color_hex(0x44cc44), 0);
+        } else if (ws == WIFI_CONNECTING) {
+            lv_label_set_text(lbl_wifi, LV_SYMBOL_REFRESH);
+            lv_obj_set_style_text_color(lbl_wifi, lv_color_hex(0xccaa44), 0);
+        } else {
+            lv_label_set_text(lbl_wifi, LV_SYMBOL_CLOSE);
+            lv_obj_set_style_text_color(lbl_wifi, lv_color_hex(0xcc4444), 0);
+        }
     }
 }
