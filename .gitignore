@@ -1,0 +1,29 @@
+# Build output
+build/
+build_*/
+
+# ESP-IDF generated
+sdkconfig.old
+dependencies.lock.changed
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# OS
+Thumbs.db
+.DS_Store
+Desktop.ini
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs
+*.log
+
+# Demo directories (keep as reference, not in git)
+ESP-IDF-v5.3.2/
