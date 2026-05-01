@@ -15,11 +15,10 @@ typedef enum {
 
 typedef struct {
     const char *name;
-    const char *name_zh;
     const void *icon_img;                  /* LVGL image descriptor pointer */
     void (*create)(lv_obj_t *parent);
     void (*destroy)(void);
-    void (*resume)(void);                  /* optional: called when app becomes active again */
+    void (*resume)(void);
 } app_entry_t;
 
 void app_framework_init(void);

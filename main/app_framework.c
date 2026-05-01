@@ -25,7 +25,7 @@ DECLARE_APP(ball);
 /* Dummy app for un-implemented apps */
 static void app_dummy_create(lv_obj_t *parent) {
     lv_obj_t *label = lv_label_create(parent);
-    lv_label_set_text(label, "Coming Soon\n开发中...");
+    lv_label_set_text(label, "Coming Soon");
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(label);
 }
@@ -33,7 +33,7 @@ static void app_dummy_destroy(void) {}
 static void app_dummy_resume(void) {}
 
 static const app_entry_t app_dummy = {
-    .name = "Coming Soon", .name_zh = "开发中",
+    .name = "Coming Soon",
     .icon_img = NULL,
     .create = app_dummy_create, .destroy = app_dummy_destroy, .resume = app_dummy_resume,
 };
@@ -84,6 +84,13 @@ void app_framework_init(void)
     app_registry_add(&app_metronome);
     app_registry_add(&app_pedometer);
     app_registry_add(&app_ball);
+
+    /* 9th slot: placeholder to complete 3x3 grid */
+    static const app_entry_t app_extra = {
+        .name = "More",
+        .create = app_dummy_create, .destroy = app_dummy_destroy, .resume = app_dummy_resume,
+    };
+    app_registry_add(&app_extra);
 
     /* Create all screens upfront (hidden) */
     scr_home = lv_obj_create(NULL);
@@ -148,7 +155,7 @@ void app_framework_launch_app(int index)
 
     /* App title bar */
     lv_obj_t *title = lv_label_create(scr_app);
-    lv_label_set_text_fmt(title, "%s / %s", current_app->name, current_app->name_zh);
+    lv_label_set_text(title, current_app->name);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
 
     /* App content area */

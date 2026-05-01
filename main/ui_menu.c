@@ -25,6 +25,7 @@ static const icon_def_t app_icons[] = {
     {LV_SYMBOL_BELL,      0x88cc44},   /* Metronome   */
     {LV_SYMBOL_LIST,      0xccaa44},   /* Pedometer   */
     {LV_SYMBOL_SHUFFLE,   0x44cc88},   /* Ball        */
+    {LV_SYMBOL_PLUS,      0x8866cc},   /* More        */
 };
 
 static void on_app_tapped(lv_event_t *e)
@@ -95,7 +96,7 @@ lv_obj_t *ui_menu_create(lv_obj_t *scr)
 
         /* App name label */
         lv_obj_t *lbl = lv_label_create(tile);
-        lv_label_set_text(lbl, app->name_zh);
+        lv_label_set_text(lbl, app->name);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
         lv_obj_set_style_text_color(lbl, lv_color_hex(0xcccccc), 0);
         lv_obj_align(lbl, LV_ALIGN_BOTTOM_MID, 0, -5);
