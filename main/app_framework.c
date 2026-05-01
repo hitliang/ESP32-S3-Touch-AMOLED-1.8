@@ -63,12 +63,13 @@ static const app_entry_t *current_app = NULL;
 lv_obj_t *scr_home = NULL;
 lv_obj_t *scr_menu = NULL;
 static lv_obj_t *scr_app = NULL;
+static lv_obj_t *scr_blank = NULL;
 static lv_obj_t *app_content = NULL;
 
 /* ------------------------------------------------------------------ */
 /*  Forward decls                                                      */
 /* ------------------------------------------------------------------ */
-static void load_screen(lv_obj_t *scr, bool animate);
+static void load_screen_impl(lv_obj_t *scr, bool animate);
 
 /* ------------------------------------------------------------------ */
 /*  Implementation                                                     */
@@ -92,7 +93,11 @@ void app_framework_init(void)
     };
     app_registry_add(&app_extra);
 
-    /* Create all screens upfront (hidden) */
+    /* Create all screens upfront */
+    scr_blank = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(scr_blank, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(scr_blank, LV_OPA_COVER, 0);
+
     scr_home = lv_obj_create(NULL);
     scr_menu = lv_obj_create(NULL);
 
@@ -118,14 +123,14 @@ void app_framework_go_home(void)
         scr_app = NULL;
     }
     nav_state = NAV_STATE_HOME;
-    load_screen(scr_home, true);
+    load_screen_impl(scr_home, true);
     ui_home_update();
 }
 
 void app_framework_go_menu(void)
 {
     nav_state = NAV_STATE_MENU;
-    load_screen(scr_menu, true);
+    load_screen_impl(scr_menu, true);
 }
 
 void app_framework_launch_app(int index)
@@ -168,7 +173,7 @@ void app_framework_launch_app(int index)
     current_app->create(app_content);
 
     nav_state = NAV_STATE_APP;
-    load_screen(scr_app, true);
+    load_screen_impl(scr_app, true);
 }
 
 void app_framework_go_back(void)
@@ -211,10 +216,29 @@ const app_entry_t *app_framework_get_app(int index)
     return app_registry[index];
 }
 
+void app_framework_screen_off(void)
+{
+    if (current_app) {
+        current_app->destroy();
+        current_app = NULL;
+    }
+    if (scr_app) {
+        lv_obj_del(scr_app);
+        scr_app = NULL;
+    }
+    nav_state = NAV_STATE_HOME;
+    load_screen_impl(scr_blank, false);
+}
+
+void app_framework_screen_on(void)
+{
+    app_framework_go_home();
+}
+
 /* ------------------------------------------------------------------ */
 /*  Screen loader helper                                               */
 /* ------------------------------------------------------------------ */
-static void load_screen(lv_obj_t *scr, bool animate)
+static void load_screen_impl(lv_obj_t *scr, bool animate)
 {
     if (!scr || scr == lv_scr_act()) return;
     if (animate) {

@@ -31,6 +31,10 @@ void app_framework_handle_swipe(lv_dir_t dir);
 int  app_framework_get_app_count(void);
 const app_entry_t *app_framework_get_app(int index);
 
+/* Screen sleep/wake (AMOLED: off = true black, pixels off) */
+void app_framework_screen_off(void);
+void app_framework_screen_on(void);
+
 #ifdef __cplusplus
 }
 #endif

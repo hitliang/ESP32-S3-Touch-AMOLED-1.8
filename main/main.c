@@ -4,6 +4,7 @@
 #include "sys_battery.h"
 #include "sys_wifi.h"
 #include "sys_imu.h"
+#include "sys_button.h"
 #include "sys_config.h"
 #include "app_framework.h"
 #include "ui_home.h"
@@ -18,15 +19,39 @@ static void gesture_handler(lv_dir_t dir)
     app_framework_handle_swipe(dir);
 }
 
+static bool screen_on = true;
+
 static void home_update_timer_cb(void *arg)
 {
     /* Update system data every second */
     sys_battery_update();
 
-    if (app_framework_get_state() == NAV_STATE_HOME) {
+    if (screen_on && app_framework_get_state() == NAV_STATE_HOME) {
         if (sys_display_lock(100)) {
             ui_home_update();
             sys_display_unlock();
+        }
+    }
+}
+
+static void button_timer_cb(void *arg)
+{
+    /* Poll button at ~20Hz */
+    if (sys_button_poll()) {
+        if (screen_on) {
+            ESP_LOGI(TAG, "Screen OFF");
+            if (sys_display_lock(500)) {
+                app_framework_screen_off();
+                sys_display_unlock();
+            }
+            screen_on = false;
+        } else {
+            ESP_LOGI(TAG, "Screen ON");
+            if (sys_display_lock(500)) {
+                app_framework_screen_on();
+                sys_display_unlock();
+            }
+            screen_on = true;
         }
     }
 }
@@ -61,9 +86,9 @@ void app_main(void)
     /* 4. System services (init after UI is stable) */
     sys_config_init();
     sys_battery_init();
+    sys_button_init();
 
     /* 5. WiFi (async, starts connecting in background) */
-    /* Note: WiFi init is non-fatal now */
     sys_wifi_init();
 
     /* 6. Periodic home update (every 1 second) */
@@ -74,6 +99,15 @@ void app_main(void)
     esp_timer_handle_t timer = NULL;
     ESP_ERROR_CHECK(esp_timer_create(&timer_args, &timer));
     ESP_ERROR_CHECK(esp_timer_start_periodic(timer, 1000000));
+
+    /* 7. Button polling timer (every 50ms) */
+    const esp_timer_create_args_t btn_timer_args = {
+        .callback = button_timer_cb,
+        .name = "btn_poll",
+    };
+    esp_timer_handle_t btn_timer = NULL;
+    ESP_ERROR_CHECK(esp_timer_create(&btn_timer_args, &btn_timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(btn_timer, 50000));
 
     ESP_LOGI(TAG, "=== Boot complete ===");
 }
