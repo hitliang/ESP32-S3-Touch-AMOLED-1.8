@@ -1,102 +1,147 @@
-| Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C6 | ESP32-H2 | ESP32-S2 | ESP32-S3 |
-| ----------------- | ----- | -------- | -------- | -------- | -------- | -------- | -------- |
+# ESP32-S3-Touch-AMOLED-1.8 多应用系统
 
-| Supported LCD Controllers | SPD2010 | GC9B71 | SH8601 |
-| ------------------------- | ------- | ------ | ------ |
+基于 Waveshare ESP32-S3-Touch-AMOLED-1.8 开发板的模块化多应用系统，使用 ESP-IDF + LVGL 构建。
 
-# QSPI LCD (with RAM) and Touch Panel Example
+## 硬件配置
 
-[esp_lcd](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/lcd.html) provides several panel drivers out-of box, e.g. ST7789, SSD1306, NT35510. However, there're a lot of other panels on the market, it's beyond `esp_lcd` component's responsibility to include them all.
+| 功能 | 芯片/型号 | 接口 |
+|------|-----------|------|
+| 主控 | ESP32-S3R8（双核 240MHz，8MB PSRAM，16MB Flash） | — |
+| 显示屏 | 1.8" AMOLED 368×448 | SH8601 QSPI |
+| 触摸 | FT5x06 | I2C（地址 0x38） |
+| 电池 | AXP2101 PMIC | I2C（地址 0x34） |
+| IMU | QMI8658（6轴加速度+陀螺仪） | I2C（地址 0x6B） |
+| 音频 | ES8311 编解码（麦克风+喇叭） | I2S |
+| RTC | PCF85063 | I2C |
+| 无线 | WiFi 2.4GHz + BLE 5.0 | 板载天线 |
+| 扩展 | Micro SD 卡槽 | SDMMC |
+| 按钮 | PWR（电源）、BOOT（GPIO0 自定义） | GPIO |
 
-`esp_lcd` allows user to add their own panel drivers in the project scope (i.e. panel driver can live outside of esp-idf), so that the upper layer code like LVGL porting code can be reused without any modifications, as long as user-implemented panel driver follows the interface defined in the `esp_lcd` component.
+### 引脚分布
 
-This example shows how to use SPD1020, GC9B71 or SH8601 display driver from Component manager in esp-idf project. These components are using API provided by `esp_lcd` component. This example will draw a fancy dash board with the LVGL library.
+| 引脚 | 功能 |
+|------|------|
+| GPIO4 ~ GPIO7 | QSPI DATA0 ~ DATA3 |
+| GPIO11 | QSPI CLK |
+| GPIO12 | QSPI CS |
+| GPIO14 | I2C SCL（触摸/传感器/音频共用） |
+| GPIO15 | I2C SDA（触摸/传感器/音频共用） |
+| GPIO21 | 触摸中断 INT |
+| GPIO0 | BOOT 按钮 |
 
-This example uses the [esp_timer](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/system/esp_timer.html) to generate the ticks needed by LVGL and uses a dedicated task to run the `lv_timer_handler()`. Since the LVGL APIs are not thread-safe, this example uses a mutex which be invoked before the call of `lv_timer_handler()` and released after it. The same mutex needs to be used in other tasks and threads around every LVGL (lv_...) related function call and code. For more porting guides, please refer to [LVGL porting doc](https://docs.lvgl.io/master/porting/index.html).
-
-## Touch controller
-
-In this example you can enable touch controller SPD2010 or CST816 connected via I2C.
-
-## How to use the example
-
-### Hardware Required
-
-* An ESP development board
-* A SPD1020, GC9B71 or SH8601 LCD panel, with QSPI interface (with/without touch)
-* An USB cable for power supply and programming
-
-### Hardware Connection
-
-The connection between ESP Board and the LCD is as follows:
+## 项目结构
 
 ```
-       ESP Board                SPD1020, GC9B71 or SH8601 Panel (QSPI)
-┌──────────────────────┐              ┌────────────────────┐
-│             GND      ├─────────────►│ GND                │
-│                      │              │                    │
-│             3V3      ├─────────────►│ VCC                │
-│                      │              │                    │
-│             CS       ├─────────────►│ CS                 │
-│                      │              │                    │
-│             SCK      ├─────────────►│ CLK                │
-│                      │              │                    │
-│             D3       ├─────────────►│ IO3                │
-│                      │              │                    │
-│             D2       ├─────────────►│ IO2                │
-│                      │              │                    │
-│             D1       ├─────────────►│ IO1                │
-│                      │              │                    │
-│             D0       ├─────────────►│ IO0                │
-│                      │              │                    │
-│             RST      ├─────────────►│ RSTN               │
-│                      │              │                    │
-│             (SCL)    ├─────────────►│ TP_SCL             │
-│                      │              │                    │
-│             (SDA)    ├─────────────►│ TP_SDA             │
-│                      │              │                    │
-│             (TP_INT) ├─────────────►│ TP_INT             │
-│                      │              │                    │
-│             (3V3)    ├─────────────►│ TP_RST             │
-│                      │              │                    │
-└──────────────────────┘              └────────────────────┘
+├── main/
+│   ├── main.c                  # 入口，系统初始化
+│   ├── app_framework.c/h       # 应用注册表 + 导航状态机
+│   ├── ui_home.c/h             # 主屏幕（时钟/电池/WiFi）
+│   ├── ui_menu.c/h             # 3×3 应用菜单
+│   ├── sys_display.c/h         # SH8601 显示屏驱动 + LVGL
+│   ├── sys_touch.c/h           # FT5x06 触摸驱动
+│   ├── sys_i2c.c/h             # I2C 总线 + TCA9554 电源管理
+│   ├── sys_battery.c/h         # AXP2101 电池管理（规划中）
+│   ├── sys_imu.c/h             # QMI8658 姿态传感器（规划中）
+│   ├── sys_wifi.c/h            # WiFi + NTP 时间同步（规划中）
+│   ├── sys_audio.c/h           # ES8311 音频（规划中）
+│   ├── sys_sdcard.c/h          # SD 卡（规划中）
+│   ├── sys_button.c/h          # 按键处理（规划中）
+│   ├── sys_config.c/h          # NVS 配置存储（规划中）
+│   ├── app_settings.c/h        # 设置应用（规划中）
+│   ├── app_attitude.c/h        # 姿态仪（规划中）
+│   ├── app_voice.c/h           # 语音助手（规划中）
+│   ├── app_music.c/h           # 音乐播放器（规划中）
+│   ├── app_metronome.c/h       # 节拍器（规划中）
+│   ├── app_weather.c/h         # 天气显示（规划中）
+│   ├── app_pedometer.c/h       # 计步器（规划中）
+│   └── app_ball.c/h            # 重力小球（规划中）
+├── components/                 # 本地组件
+│   ├── esp_lcd_sh8601/         # SH8601 LCD 面板驱动
+│   ├── espressif__esp_lcd_touch/         # ESP 触摸抽象层
+│   ├── espressif__esp_lcd_touch_ft5x06/  # FT5x06 触摸驱动
+│   └── espressif__cmake_utilities/       # CMake 工具
+├── managed_components/         # 托管组件（自动下载）
+│   ├── lvgl__lvgl/             # LVGL 8.4.0
+│   ├── espressif__esp_io_expander/         # IO 扩展抽象层
+│   └── espressif__esp_io_expander_tca9554/ # TCA9554 驱动
+├── CMakeLists.txt
+├── partitions.csv              # 分区表
+├── sdkconfig / sdkconfig.defaults
+├── build_flash.bat             # Windows 一键编译烧写脚本
+└── .gitignore
 ```
 
-The GPIO number used by this example can be changed in [example_qspi_with_ram.c](main/example_qspi_with_ram.c).
-Especially, please pay attention to the level used to turn on the LCD backlight, some LCD module needs a low level to turn it on, while others take a high level. You can change the backlight level macro `EXAMPLE_LCD_BK_LIGHT_ON_LEVEL` in [example_qspi_with_ram.c](main/example_qspi_with_ram.c).
-The LCD vendor specific initialization can be different between manufacturers and should consult the LCD supplier for initialization sequence code.
+## 开发环境
 
-### Build and Flash
+- **ESP-IDF**: v5.4
+- **LVGL**: 8.4.0
+- **编译工具链**: xtensa-esp-elf 14.2.0
+- **烧写工具**: esptool.py v4.8.1
+- **串口**: COM9（460800 bps）
 
-Run `idf.py -p PORT build flash monitor` to build, flash and monitor the project. A fancy animation will show up on the LCD as expected.
+## 编译 & 烧写
 
-The first time you run `idf.py` for the example will cost extra time as the build system needs to address the component dependencies and downloads the missing components from registry into `managed_components` folder.
+### Windows
 
-(To exit the serial monitor, type ``Ctrl-]``.)
+双击 `build_flash.bat`，或命令行运行：
 
-See the [Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/latest/get-started/index.html) for full steps to configure and use ESP-IDF to build projects.
+```bat
+build_flash.bat
+```
 
-### Example Output
+### 手动编译
 
 ```bash
-...
-I (415) example: Turn off LCD backlight
-I (420) gpio: GPIO[0]| InputEn: 0| OutputEn: 1| OpenDrain: 0| Pullup: 0| Pulldown: 0| Intr:0
-I (429) example: Initialize SPI bus
-I (434) example: Install panel IO
-I (438) example: Install SPD2010 panel driver
-I (442) gpio: GPIO[17]| InputEn: 0| OutputEn: 1| OpenDrain: 0| Pullup: 0| Pulldown: 0| Intr:0
-I (452) spd2010: LCD panel create success, version: 0.0.1
-I (741) example: Turn on LCD backlight
-I (741) example: Initialize LVGL library
-I (741) example: Register display driver to LVGL
-I (746) example: Install LVGL tick timer
-I (748) example: Starting LVGL task
-I (795) example: Display LVGL demos
-I (1038) main_task: Returned from app_main()
-...
+# 设置目标芯片
+idf.py set-target esp32s3
+
+# 编译
+idf.py build
+
+# 烧写（COM9 替换为实际串口）
+idf.py -p COM9 flash
+
+# 查看日志
+idf.py -p COM9 monitor
 ```
 
-## Troubleshooting
+## 已实现（Phase 1）
 
-For any technical queries, please open an [issue] (https://github.com/espressif/esp-iot-solution/issues) on GitHub. We will get back to you soon.
+- [x] 模块化项目结构，每个应用独立 .c 文件
+- [x] SH8601 AMOLED 显示驱动（QSPI，368×448）
+- [x] FT5x06 电容触摸输入
+- [x] LVGL 8.4 双缓冲渲染
+- [x] 主屏幕：时钟、日期、电池/WiFi 占位
+- [x] 3×3 应用图标菜单
+- [x] 应用框架：手势导航（上滑进入菜单，下滑返回主页）
+- [x] 应用注册表机制，可扩展新应用
+
+## 开发中
+
+| 阶段 | 内容 |
+|------|------|
+| Phase 2 | AXP2101 电池、QMI8658 IMU、WiFi+NTP、按键、NVS、SD 卡 |
+| Phase 3 | 设置应用、姿态仪 |
+| Phase 4 | 天气显示、计步器 |
+| Phase 5 | 重力小球物理模拟 |
+| Phase 6 | ES8311 音频、音乐播放器、节拍器 |
+| Phase 7 | 语音助手（DeepSeek LLM + MIMO TTS） |
+
+## 应用导航
+
+| 操作 | 效果 |
+|------|------|
+| 开机 | 显示主屏幕 |
+| 主屏向上滑动 | 进入应用菜单 |
+| 菜单点击图标 | 打开应用 |
+| 应用内点返回 | 回到菜单 |
+| 菜单向下滑动 | 回到主屏 |
+
+## 技术选型
+
+| 项目 | 选择 |
+|------|------|
+| LLM API | DeepSeek |
+| TTS 引擎 | MIMO TTS |
+| 天气 API | 和风天气 (QWeather) |
+| 音频格式 | WAV |
