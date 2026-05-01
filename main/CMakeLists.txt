@@ -13,4 +13,6 @@ idf_component_register(
         "app_framework.c"
         "ui_home.c"
         "ui_menu.c"
+        "app_settings.c"
+        "app_attitude.c"
     INCLUDE_DIRS ".")

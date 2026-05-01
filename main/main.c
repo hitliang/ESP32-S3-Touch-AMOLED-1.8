@@ -86,6 +86,7 @@ void app_main(void)
     /* 4. System services (init after UI is stable) */
     sys_config_init();
     sys_battery_init();
+    sys_imu_init();
     sys_button_init();
 
     /* 5. WiFi (async, starts connecting in background) */
