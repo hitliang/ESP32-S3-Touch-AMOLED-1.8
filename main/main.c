@@ -4,9 +4,7 @@
 #include "sys_battery.h"
 #include "sys_wifi.h"
 #include "sys_imu.h"
-#include "sys_button.h"
 #include "sys_config.h"
-#include "sys_sdcard.h"
 #include "app_framework.h"
 #include "ui_home.h"
 #include "esp_log.h"
@@ -60,14 +58,12 @@ void app_main(void)
     app_framework_init();
     app_framework_go_home();
 
-    /* 4. System services (non-blocking) */
+    /* 4. System services (init after UI is stable) */
     sys_config_init();
     sys_battery_init();
-    sys_imu_init();
-    sys_sdcard_init();
-    sys_button_init();
 
     /* 5. WiFi (async, starts connecting in background) */
+    /* Note: WiFi init is non-fatal now */
     sys_wifi_init();
 
     /* 6. Periodic home update (every 1 second) */

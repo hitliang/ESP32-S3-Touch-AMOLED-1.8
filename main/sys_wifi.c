@@ -51,7 +51,11 @@ void sys_wifi_init(void)
     sta_netif = esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    esp_err_t ret = esp_wifi_init(&cfg);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "WiFi init failed: %d", ret);
+        return;
+    }
 
     esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED, on_disconnected, NULL);
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_got_ip, NULL);
@@ -62,9 +66,9 @@ void sys_wifi_init(void)
             .password = WIFI_PASS,
         },
     };
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) return;
+    if (esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg) != ESP_OK) return;
+    if (esp_wifi_start() != ESP_OK) return;
 
     /* Register NTP sync callback */
     sntp_set_time_sync_notification_cb(on_time_sync);

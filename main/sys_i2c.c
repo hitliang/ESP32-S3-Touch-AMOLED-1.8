@@ -1,8 +1,11 @@
 #include "sys_i2c.h"
 #include "esp_log.h"
 #include "esp_io_expander_tca9554.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "sys_i2c";
+static SemaphoreHandle_t i2c_mux = NULL;
 
 #define I2C_HOST          I2C_NUM_0
 #define I2C_FREQ_HZ       200000
@@ -40,6 +43,7 @@ void sys_i2c_init(void)
     esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_1, 1);
     esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_2, 1);
 
+    i2c_mux = xSemaphoreCreateMutex();
     ESP_LOGI(TAG, "I2C bus ready");
 }
 
@@ -51,4 +55,14 @@ i2c_port_t sys_i2c_get_port(void)
 esp_io_expander_handle_t sys_i2c_get_io_expander(void)
 {
     return io_expander;
+}
+
+bool sys_i2c_take(int timeout_ms)
+{
+    return xSemaphoreTake(i2c_mux, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+}
+
+void sys_i2c_give(void)
+{
+    xSemaphoreGive(i2c_mux);
 }

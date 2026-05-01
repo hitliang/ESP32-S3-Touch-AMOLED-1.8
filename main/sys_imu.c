@@ -33,17 +33,24 @@ static bool  step_armed = false;
 
 static esp_err_t imu_read_reg(uint8_t reg, uint8_t *data, uint8_t len)
 {
-    return i2c_master_write_read_device(
+    if (!sys_i2c_take(50)) return ESP_ERR_TIMEOUT;
+    uint8_t r = reg;
+    esp_err_t ret = i2c_master_write_read_device(
         sys_i2c_get_port(), QMI8658_ADDR,
-        &reg, 1, data, len, pdMS_TO_TICKS(50));
+        &r, 1, data, len, pdMS_TO_TICKS(50));
+    sys_i2c_give();
+    return ret;
 }
 
 static esp_err_t imu_write_reg(uint8_t reg, uint8_t val)
 {
+    if (!sys_i2c_take(50)) return ESP_ERR_TIMEOUT;
     uint8_t buf[2] = {reg, val};
-    return i2c_master_write_to_device(
+    esp_err_t ret = i2c_master_write_to_device(
         sys_i2c_get_port(), QMI8658_ADDR,
         buf, 2, pdMS_TO_TICKS(50));
+    sys_i2c_give();
+    return ret;
 }
 
 static void imu_read_task(void *arg)

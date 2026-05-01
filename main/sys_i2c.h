@@ -10,6 +10,8 @@ extern "C" {
 void sys_i2c_init(void);
 i2c_port_t sys_i2c_get_port(void);
 esp_io_expander_handle_t sys_i2c_get_io_expander(void);
+bool sys_i2c_take(int timeout_ms);
+void sys_i2c_give(void);
 
 #ifdef __cplusplus
 }
