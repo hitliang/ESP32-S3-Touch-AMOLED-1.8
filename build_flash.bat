@@ -10,7 +10,7 @@ set PATH=C:\Users\reddy\.espressif\tools\esp-rom-elfs\20241011;%PATH%
 set PATH=C:\Users\reddy\.espressif\tools\idf-git\2.39.2\cmd;%PATH%
 set MSYSTEM=
 
-cd /d D:\ESP32-S3-Touch-AMOLED-1.8-main\ESP-IDF-v5.3.2\05_LVGL_WITH_RAM
+cd /d D:\ESP32-S3-Touch-AMOLED-1.8-main
 
 echo === Building ===
 python "%IDF_PATH%\tools\idf.py" build
