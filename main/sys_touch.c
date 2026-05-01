@@ -2,16 +2,24 @@
 #include "sys_i2c.h"
 #include "esp_lcd_touch_ft5x06.h"
 #include "esp_log.h"
+#include <stdlib.h>
 
 static const char *TAG = "sys_touch";
 
-#define TOUCH_HOST        I2C_NUM_0    /* shared with other I2C devices */
+#define TOUCH_HOST        I2C_NUM_0
 #define PIN_TOUCH_INT     GPIO_NUM_21
 #define PIN_TOUCH_RST     (-1)
 #define LCD_H_RES         368
 #define LCD_V_RES         448
 
+#define SWIPE_THRESHOLD   40
+
 static esp_lcd_touch_handle_t tp = NULL;
+
+static bool     swipe_ready = false;
+static lv_dir_t swipe_dir   = LV_DIR_NONE;
+static int      touch_start_x = 0, touch_start_y = 0;
+static int      touch_last_x = 0, touch_last_y = 0;
 
 static void lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
 {
@@ -19,11 +27,27 @@ static void lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
     uint8_t tp_cnt = 0;
     esp_lcd_touch_read_data(tp);
     bool pressed = esp_lcd_touch_get_coordinates(tp, &tp_x, &tp_y, NULL, &tp_cnt, 1);
+
     if (pressed && tp_cnt > 0) {
+        if (data->state != LV_INDEV_STATE_PRESSED) {
+            touch_start_x = tp_x;
+            touch_start_y = tp_y;
+        }
+        touch_last_x = tp_x;
+        touch_last_y = tp_y;
         data->point.x = tp_x;
         data->point.y = tp_y;
         data->state = LV_INDEV_STATE_PRESSED;
     } else {
+        if (data->state == LV_INDEV_STATE_PRESSED) {
+            int dx = touch_last_x - touch_start_x;
+            int dy = touch_last_y - touch_start_y;
+
+            if (abs(dy) > SWIPE_THRESHOLD && abs(dy) > abs(dx)) {
+                swipe_dir   = (dy < 0) ? LV_DIR_TOP : LV_DIR_BOTTOM;
+                swipe_ready = true;
+            }
+        }
         data->state = LV_INDEV_STATE_RELEASED;
     }
 }
@@ -58,4 +82,14 @@ void sys_touch_init(lv_disp_t *disp)
 esp_lcd_touch_handle_t sys_touch_get_handle(void)
 {
     return tp;
+}
+
+bool sys_touch_get_swipe(lv_dir_t *dir)
+{
+    if (swipe_ready) {
+        *dir = swipe_dir;
+        swipe_ready = false;
+        return true;
+    }
+    return false;
 }

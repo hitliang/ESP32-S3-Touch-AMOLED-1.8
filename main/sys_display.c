@@ -1,5 +1,6 @@
 #include "sys_display.h"
 #include "sys_i2c.h"
+#include "sys_touch.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
@@ -148,14 +149,11 @@ static void lvgl_port_task(void *arg)
         if (sys_display_lock(-1)) {
             task_delay_ms = lv_timer_handler();
 
-            /* Check for gesture */
+            /* Check for manual swipe */
             if (gesture_cb) {
-                lv_indev_t *indev = lv_indev_get_act();
-                if (indev) {
-                    lv_dir_t dir = lv_indev_get_gesture_dir(indev);
-                    if (dir != LV_DIR_NONE) {
-                        gesture_cb(dir);
-                    }
+                lv_dir_t dir;
+                if (sys_touch_get_swipe(&dir)) {
+                    gesture_cb(dir);
                 }
             }
 
