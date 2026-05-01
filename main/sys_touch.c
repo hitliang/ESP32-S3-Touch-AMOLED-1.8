@@ -12,6 +12,7 @@ static const char *TAG = "sys_touch";
 #define LCD_V_RES         448
 
 static esp_lcd_touch_handle_t tp = NULL;
+static lv_indev_t *touch_indev = NULL;
 
 /* Exposed for swipe detection in sys_display */
 int g_debug_touch_x = -1, g_debug_touch_y = -1;
@@ -59,7 +60,7 @@ void sys_touch_init(lv_disp_t *disp)
     indev_drv.disp = disp;
     indev_drv.read_cb = lvgl_touch_cb;
     indev_drv.user_data = tp;
-    lv_indev_drv_register(&indev_drv);
+    touch_indev = lv_indev_drv_register(&indev_drv);
 
     ESP_LOGI(TAG, "Touch ready");
 }
@@ -67,4 +68,11 @@ void sys_touch_init(lv_disp_t *disp)
 esp_lcd_touch_handle_t sys_touch_get_handle(void)
 {
     return tp;
+}
+
+void sys_touch_set_enabled(bool enabled)
+{
+    if (touch_indev) {
+        lv_indev_enable(touch_indev, enabled);
+    }
 }

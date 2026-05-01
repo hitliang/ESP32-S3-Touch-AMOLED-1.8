@@ -2,6 +2,7 @@
 #include "ui_home.h"
 #include "ui_menu.h"
 #include "sys_display.h"
+#include "sys_touch.h"
 #include "esp_log.h"
 
 static const char *TAG = "app_fw";
@@ -228,10 +229,12 @@ void app_framework_screen_off(void)
     }
     nav_state = NAV_STATE_HOME;
     load_screen_impl(scr_blank, false);
+    sys_touch_set_enabled(false);
 }
 
 void app_framework_screen_on(void)
 {
+    sys_touch_set_enabled(true);
     app_framework_go_home();
 }
 
