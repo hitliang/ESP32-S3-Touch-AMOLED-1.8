@@ -49,7 +49,7 @@ static void update_cb(lv_timer_t *t)
 
         /* Wall collisions — ball is lv_obj at (bx-r, by-r) with size 2r */
         float r = br[i];
-        float margin = r + 2;  /* keep ball fully inside container */
+        float margin = r;  /* keep ball fully inside container */
         if (bx[i] < margin)      { bx[i] = margin;      bvx[i] = -bvx[i] * WALL_BOUNCE; }
         if (bx[i] > W - margin)  { bx[i] = W - margin;  bvx[i] = -bvx[i] * WALL_BOUNCE; }
         if (by[i] < margin)      { by[i] = margin;      bvy[i] = -bvy[i] * WALL_BOUNCE; }
@@ -108,6 +108,7 @@ static void create(lv_obj_t *parent)
     lv_obj_set_size(root, W, H);
     lv_obj_set_style_bg_color(root, lv_color_hex(0x0a0a18), 0);
     lv_obj_set_style_border_width(root, 0, 0);
+    lv_obj_set_style_pad_all(root, 0, 0);
     lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
 
     /* Create balls at random positions */

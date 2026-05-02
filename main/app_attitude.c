@@ -67,6 +67,7 @@ static void create(lv_obj_t *parent)
     lv_obj_set_size(root, 340, 390);
     lv_obj_set_style_bg_color(root, lv_color_black(), 0);
     lv_obj_set_style_border_width(root, 0, 0);
+    lv_obj_set_style_pad_all(root, 0, 0);
     lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(root, LV_SCROLLBAR_MODE_OFF);
 
@@ -121,6 +122,7 @@ static void create(lv_obj_t *parent)
     lv_obj_set_style_border_color(bubble_cont, lv_color_hex(0x333355), 0);
     lv_obj_set_style_border_width(bubble_cont, 2, 0);
     lv_obj_set_style_radius(bubble_cont, half, 0);
+    lv_obj_set_style_pad_all(bubble_cont, 0, 0);
     lv_obj_clear_flag(bubble_cont, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(bubble_cont, LV_SCROLLBAR_MODE_OFF);
 

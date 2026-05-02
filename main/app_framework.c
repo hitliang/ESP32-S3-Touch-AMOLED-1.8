@@ -72,9 +72,12 @@ void app_framework_init(void)
     scr_blank = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(scr_blank, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr_blank, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(scr_blank, 0, 0);
 
     scr_home = lv_obj_create(NULL);
+    lv_obj_set_style_pad_all(scr_home, 0, 0);
     scr_menu = lv_obj_create(NULL);
+    lv_obj_set_style_pad_all(scr_menu, 0, 0);
 
     ui_home_create(scr_home);
     ui_menu_create(scr_menu);
@@ -119,6 +122,7 @@ void app_framework_launch_app(int index)
     scr_app = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(scr_app, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr_app, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(scr_app, 0, 0);
     lv_obj_clear_flag(scr_app, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(scr_app, LV_SCROLLBAR_MODE_OFF);
 
@@ -131,10 +135,11 @@ void app_framework_launch_app(int index)
 
     /* App content area */
     app_content = lv_obj_create(scr_app);
-    lv_obj_set_size(app_content, 368, 400);
+    lv_obj_set_size(app_content, 368, 390);
     lv_obj_align(app_content, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_border_width(app_content, 0, 0);
     lv_obj_set_style_bg_opa(app_content, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_pad_all(app_content, 0, 0);
     lv_obj_clear_flag(app_content, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_scrollbar_mode(app_content, LV_SCROLLBAR_MODE_OFF);
 

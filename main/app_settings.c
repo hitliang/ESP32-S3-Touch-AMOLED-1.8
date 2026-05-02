@@ -32,6 +32,7 @@ static void create(lv_obj_t *parent)
     lv_obj_set_size(root, 340, 390);
     lv_obj_set_style_bg_color(root, lv_color_black(), 0);
     lv_obj_set_style_border_width(root, 0, 0);
+    lv_obj_set_style_pad_all(root, 0, 0);
     lv_obj_set_scroll_dir(root, LV_DIR_VER);
 
     int y = 5;
