@@ -64,6 +64,35 @@ static esp_err_t http_get(const char *url, char *buf, int max)
     return (err == ESP_OK && ctx.status == 200 && ctx.len > 0) ? ESP_OK : ESP_FAIL;
 }
 
+static const char *cn2en(const char *cn)
+{
+    if (!cn) return "?";
+    if (strstr(cn, "晴")) return "Clear";
+    if (strstr(cn, "多云")) return "Cloudy";
+    if (strstr(cn, "阴")) return "Overcast";
+    if (strstr(cn, "雨")) return "Rain";
+    if (strstr(cn, "雪")) return "Snow";
+    if (strstr(cn, "雾") || strstr(cn, "霾")) return "Haze";
+    if (strstr(cn, "沙")) return "Dust";
+    if (strstr(cn, "风")) return "Windy";
+    if (strstr(cn, "雷")) return "Storm";
+    return cn;
+}
+
+static const char *wind2en(const char *cn)
+{
+    if (!cn) return "?";
+    if (strstr(cn, "北")) return "N";
+    if (strstr(cn, "南")) return "S";
+    if (strstr(cn, "东")) return "E";
+    if (strstr(cn, "西")) return "W";
+    if (strstr(cn, "东北")) return "NE";
+    if (strstr(cn, "西北")) return "NW";
+    if (strstr(cn, "东南")) return "SE";
+    if (strstr(cn, "西南")) return "SW";
+    return cn;
+}
+
 static void do_fetch(void)
 {
     if (!sys_wifi_is_connected()) { state = -1; return; }
@@ -98,11 +127,11 @@ static void do_fetch(void)
                 cJSON *dwd = cJSON_GetObjectItem(today, "daywind");
                 cJSON *dwp = cJSON_GetObjectItem(today, "daypower");
                 snprintf(wx_today, sizeof(wx_today), "%s",
-                         dw ? dw->valuestring : "--");
+                         cn2en(dw ? dw->valuestring : NULL));
                 snprintf(wx_temp, sizeof(wx_temp), "%sC",
                          dt ? dt->valuestring : "--");
-                snprintf(wx_wind, sizeof(wx_wind), "%s %s级",
-                         dwd ? dwd->valuestring : "",
+                snprintf(wx_wind, sizeof(wx_wind), "%s %s",
+                         wind2en(dwd ? dwd->valuestring : NULL),
                          dwp ? dwp->valuestring : "");
 
                 for (int i = 0; i < 3; i++) {
@@ -115,7 +144,7 @@ static void do_fetch(void)
                     const char *p = ds + 5; /* skip "2026-" to get MM-DD */
                     snprintf(fc[i], sizeof(fc[i]), "%s %s %s/%sC",
                              p,
-                             w ? w->valuestring : "--",
+                             cn2en(w ? w->valuestring : NULL),
                              hi ? hi->valuestring : "--",
                              lo ? lo->valuestring : "--");
                 }
