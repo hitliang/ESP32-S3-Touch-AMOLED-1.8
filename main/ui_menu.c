@@ -22,7 +22,7 @@ static const icon_def_t app_icons[] = {
     {LV_SYMBOL_HOME,      0x44aacc},   /* Weather     */
     {LV_SYMBOL_AUDIO,     0xcc8844},   /* Voice AI    */
     {LV_SYMBOL_FILE,      0xcc4488},   /* Music       */
-    {LV_SYMBOL_BELL,      0x88cc44},   /* Metronome   */
+    {LV_SYMBOL_CHARGE,    0x88cc44},   /* Snake       */
     {LV_SYMBOL_LIST,      0xccaa44},   /* Pedometer   */
     {LV_SYMBOL_SHUFFLE,   0x44cc88},   /* Ball        */
     {LV_SYMBOL_PLUS,      0x8866cc},   /* More        */
