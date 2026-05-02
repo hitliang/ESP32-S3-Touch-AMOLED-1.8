@@ -28,6 +28,19 @@ static void home_update_timer_cb(void *arg)
 {
     sys_battery_update();
 
+    /* Deferred init: audio after system is stable (tick ~3s) */
+    static int late_init_done = 0;
+    if (!late_init_done) {
+        static int tick = 0;
+        tick++;
+        if (tick == 3) {
+            printf("MAIN: starting audio init...\n");
+            sys_audio_init();
+            printf("MAIN: audio init done\n");
+            late_init_done = 1;
+        }
+    }
+
     if (sys_display_lock(200)) {
         /* Process pending button action */
         int act = pending_action;

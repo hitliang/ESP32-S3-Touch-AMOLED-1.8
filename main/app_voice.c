@@ -338,6 +338,17 @@ static void ask_bg_task(void *arg)
     char *reply = llm_chat(question);
     if (reply) {
         history_add(question, reply);
+
+        /* TTS: speak the reply */
+        printf("VOICE: TTS start\n");
+        if (tts_speak(reply)) {
+            printf("VOICE: TTS got %d bytes\n", audio_len);
+            sys_audio_play_wav(audio_buf, audio_len);
+            free(audio_buf); audio_buf = NULL;
+        } else {
+            printf("VOICE: TTS failed\n");
+        }
+
         ask_result_text = reply;
         ask_state = 2;
     } else {
