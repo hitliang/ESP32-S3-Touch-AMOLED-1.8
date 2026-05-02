@@ -118,6 +118,8 @@ void app_framework_launch_app(int index)
     scr_app = lv_obj_create(NULL);
     lv_obj_set_style_bg_color(scr_app, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr_app, LV_OPA_COVER, 0);
+    lv_obj_clear_flag(scr_app, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(scr_app, LV_SCROLLBAR_MODE_OFF);
 
     /* Title bar */
     lv_obj_t *title = lv_label_create(scr_app);
@@ -132,6 +134,8 @@ void app_framework_launch_app(int index)
     lv_obj_align(app_content, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_border_width(app_content, 0, 0);
     lv_obj_set_style_bg_opa(app_content, LV_OPA_TRANSP, 0);
+    lv_obj_clear_flag(app_content, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(app_content, LV_SCROLLBAR_MODE_OFF);
 
     current_app->create(app_content);
 

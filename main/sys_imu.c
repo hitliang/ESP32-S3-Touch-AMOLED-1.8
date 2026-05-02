@@ -86,11 +86,24 @@ static void imu_read_task(void *arg)
         latest.gyro_y  = gy / 32.0f;
         latest.gyro_z  = gz / 32.0f;
 
-        /* Roll / Pitch from accelerometer */
-        latest.roll  = atan2f(latest.accel_y, sqrtf(latest.accel_x * latest.accel_x +
-                                                     latest.accel_z * latest.accel_z)) * 57.29578f;
-        latest.pitch = atan2f(-latest.accel_x, sqrtf(latest.accel_y * latest.accel_y +
-                                                      latest.accel_z * latest.accel_z)) * 57.29578f;
+        /* Roll / Pitch from accelerometer with low-pass filter */
+        float raw_roll  = atan2f(latest.accel_y, sqrtf(latest.accel_x * latest.accel_x +
+                                                        latest.accel_z * latest.accel_z)) * 57.29578f;
+        float raw_pitch = atan2f(-latest.accel_x, sqrtf(latest.accel_y * latest.accel_y +
+                                                         latest.accel_z * latest.accel_z)) * 57.29578f;
+
+        /* Exponential moving average — smooths out sensor noise */
+        static float smooth_roll = 0, smooth_pitch = 0;
+        float a = 0.08f;  /* smaller = smoother, slower */
+        smooth_roll  = smooth_roll  * (1.0f - a) + raw_roll  * a;
+        smooth_pitch = smooth_pitch * (1.0f - a) + raw_pitch * a;
+
+        /* Dead zone: ignore tiny movements */
+        if (fabsf(smooth_roll)  < 0.3f) smooth_roll  = 0;
+        if (fabsf(smooth_pitch) < 0.3f) smooth_pitch = 0;
+
+        latest.roll  = smooth_roll;
+        latest.pitch = smooth_pitch;
 
         /* Simple step counting via peak detection on accel magnitude */
         float mag = sqrtf(latest.accel_x * latest.accel_x +
