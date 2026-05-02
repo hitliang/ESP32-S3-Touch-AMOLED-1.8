@@ -8,6 +8,7 @@
 #include "esp_crt_bundle.h"
 #include "cJSON.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,7 +16,7 @@
 #define HISTORY_FILE    "voice_history.txt"
 #define MAX_HISTORY     200     /* DeepSeek 1M context can handle many */
 #define MAX_MSG_LEN     1024    /* per-message limit */
-#define BODY_MAX        65536   /* LLM request body max */
+#define BODY_MAX        32768   /* LLM request body max */
 
 static const char *TAG = "voice";
 
@@ -206,10 +207,11 @@ static char *json_esc(const char *s, char *buf, int max)
 /* ---- DeepSeek LLM with history ---- */
 static char *llm_chat(const char *question)
 {
+    if (!question) { printf("LLM: null question\n"); return NULL; }
 
     /* Build messages array: system + history + current question */
     char *body = malloc(BODY_MAX);
-    if (!body) return NULL;
+    if (!body) { printf("LLM: malloc body fail\n"); return NULL; }
 
     char e1[2048], e2[2048];
     int off = snprintf(body, BODY_MAX,
@@ -243,7 +245,12 @@ static char *llm_chat(const char *question)
     printf("LLM: body=%.200s\n", body);
 
     uint8_t *buf = malloc(16384);
-    if (!buf) { printf("LLM: malloc fail\n"); free(body); return NULL; }
+    if (!buf) { printf("LLM: malloc buf fail\n"); free(body); return NULL; }
+
+    if (!sys_wifi_is_connected()) {
+        printf("LLM: no wifi\n");
+        free(body); free(buf); return NULL;
+    }
     int len, status;
     esp_err_t ret = http_post("https://api.deepseek.com/v1/chat/completions",
               body, "Authorization", "Bearer " DEEPSEEK_API_KEY, NULL, NULL,
@@ -335,8 +342,10 @@ static char *ask_result_text = NULL;
 static void ask_bg_task(void *arg)
 {
     char *question = (char *)arg;
-    printf("VOICE: ask '%s'\n", question);
+    printf("VOICE: ask start, wifi=%d free_heap=%lu\n",
+           sys_wifi_is_connected(), esp_get_free_heap_size());
     char *reply = llm_chat(question);
+    printf("VOICE: llm returned %p\n", reply);
     if (reply) {
         history_add(question, reply);
 
@@ -385,6 +394,7 @@ static void ask(const char *question)
 
     ask_state = 1;
     char *q = strdup(question);
+    if (!q) { ask_state = -1; return; }
     xTaskCreate(ask_bg_task, "voice_bg", 16384, q, 3, NULL);
     lv_timer_create(ask_result_cb, 300, NULL);
 }
