@@ -17,4 +17,5 @@ idf_component_register(
         "app_attitude.c"
         "app_ball.c"
         "app_snake.c"
+        "app_weather.c"
     INCLUDE_DIRS ".")

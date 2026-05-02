@@ -3,6 +3,7 @@
 #include "app_attitude.h"
 #include "app_ball.h"
 #include "app_snake.h"
+#include "app_weather.h"
 #include "ui_home.h"
 #include "ui_menu.h"
 #include "sys_display.h"
@@ -60,7 +61,7 @@ void app_framework_init(void)
     int idx = 0;
     app_registry[idx++] = APP(settings);
     app_registry[idx++] = APP(attitude);
-    app_registry[idx++] = PLACEHOLDER("Weather");
+    app_registry[idx++] = APP(weather);
     app_registry[idx++] = PLACEHOLDER("Voice AI");
     app_registry[idx++] = PLACEHOLDER("Music");
     app_registry[idx++] = APP(snake);
