@@ -68,7 +68,10 @@ void sys_audio_init(void)
 
 void sys_audio_play_wav(const uint8_t *data, int len)
 {
-    if (!tx_chan || len < 44) return;
+    if (!tx_chan || len < 44) {
+        ESP_LOGW(TAG, "Audio not available (tx=%p len=%d)", tx_chan, len);
+        return;
+    }
 
     /* Parse WAV header */
     int sample_rate = *(int *)(data + 24);
