@@ -36,23 +36,28 @@ static void home_update_timer_cb(void *arg)
 
 static void button_timer_cb(void *arg)
 {
-    /* Poll button at ~20Hz */
-    if (sys_button_poll()) {
-        if (screen_on) {
-            ESP_LOGI(TAG, "Screen OFF");
-            if (sys_display_lock(500)) {
-                app_framework_screen_off();
-                sys_display_unlock();
-            }
-            screen_on = false;
-        } else {
+    if (!sys_button_poll()) return;
+
+    if (sys_display_lock(500)) {
+        if (!screen_on) {
+            /* Wake up */
             ESP_LOGI(TAG, "Screen ON");
-            if (sys_display_lock(500)) {
-                app_framework_screen_on();
-                sys_display_unlock();
-            }
+            app_framework_screen_on();
             screen_on = true;
+        } else {
+            nav_state_t st = app_framework_get_state();
+            if (st == NAV_STATE_HOME) {
+                /* Home → screen off */
+                ESP_LOGI(TAG, "Screen OFF");
+                app_framework_screen_off();
+                screen_on = false;
+            } else {
+                /* App or Menu → back to home */
+                ESP_LOGI(TAG, "Back to home");
+                app_framework_go_home();
+            }
         }
+        sys_display_unlock();
     }
 }
 

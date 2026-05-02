@@ -124,16 +124,10 @@ void app_framework_launch_app(int index)
     lv_obj_set_style_bg_color(scr_app, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(scr_app, LV_OPA_COVER, 0);
 
-    /* Back button */
-    lv_obj_t *btn_back = lv_btn_create(scr_app);
-    lv_obj_set_size(btn_back, 50, 30);
-    lv_obj_align(btn_back, LV_ALIGN_TOP_LEFT, 5, 5);
-    lv_obj_t *lbl_back = lv_label_create(btn_back);
-    lv_label_set_text(lbl_back, LV_SYMBOL_LEFT " Back");
-    lv_obj_add_event_cb(btn_back, (lv_event_cb_t)app_framework_go_back, LV_EVENT_CLICKED, NULL);
-
-    /* App title bar */
+    /* Title bar */
     lv_obj_t *title = lv_label_create(scr_app);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(title, lv_color_hex(0x8888cc), 0);
     lv_label_set_text(title, current_app->name);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
 
