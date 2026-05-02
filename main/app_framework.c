@@ -1,4 +1,6 @@
 #include "app_framework.h"
+#include "app_settings.h"
+#include "app_attitude.h"
 #include "ui_home.h"
 #include "ui_menu.h"
 #include "sys_display.h"
@@ -7,23 +9,7 @@
 
 static const char *TAG = "app_fw";
 
-/* ------------------------------------------------------------------ */
-/*  App stubs (defined in their own .c files, not yet created)         */
-/*  We declare them as weak externs so Phase 1 builds without them.    */
-/* ------------------------------------------------------------------ */
-#define DECLARE_APP(name) \
-    extern const app_entry_t app_##name __attribute__((weak))
-
-DECLARE_APP(settings);
-DECLARE_APP(attitude);
-DECLARE_APP(weather);
-DECLARE_APP(voice);
-DECLARE_APP(music);
-DECLARE_APP(metronome);
-DECLARE_APP(pedometer);
-DECLARE_APP(ball);
-
-/* Dummy app for un-implemented apps */
+/* Dummy app for not-yet-implemented apps */
 static void app_dummy_create(lv_obj_t *parent) {
     lv_obj_t *label = lv_label_create(parent);
     lv_label_set_text(label, "Coming Soon");
@@ -33,28 +19,19 @@ static void app_dummy_create(lv_obj_t *parent) {
 static void app_dummy_destroy(void) {}
 static void app_dummy_resume(void) {}
 
-static const app_entry_t app_dummy = {
-    .name = "Coming Soon",
-    .icon_img = NULL,
-    .create = app_dummy_create, .destroy = app_dummy_destroy, .resume = app_dummy_resume,
-};
+#define APP(name)  &app_##name
+#define PLACEHOLDER(name_str)  &(const app_entry_t){ \
+    .name = name_str, \
+    .create = app_dummy_create, .destroy = app_dummy_destroy, .resume = app_dummy_resume, \
+}
 
 /* ------------------------------------------------------------------ */
-/*  App registry (filled at runtime)                                    */
+/*  App registry                                                        */
 /* ------------------------------------------------------------------ */
 #define MAX_APPS 16
 
 static const app_entry_t *app_registry[MAX_APPS + 1];
 static int app_count = 0;
-
-static void app_registry_add(const app_entry_t *candidate)
-{
-    if (candidate && candidate->name) {
-        app_registry[app_count++] = candidate;
-    } else {
-        app_registry[app_count++] = &app_dummy;
-    }
-}
 
 /* ------------------------------------------------------------------ */
 /*  Navigation state                                                   */
@@ -77,22 +54,18 @@ static void load_screen_impl(lv_obj_t *scr, bool animate);
 /* ------------------------------------------------------------------ */
 void app_framework_init(void)
 {
-    /* Build app registry at runtime */
-    app_registry_add(&app_settings);
-    app_registry_add(&app_attitude);
-    app_registry_add(&app_weather);
-    app_registry_add(&app_voice);
-    app_registry_add(&app_music);
-    app_registry_add(&app_metronome);
-    app_registry_add(&app_pedometer);
-    app_registry_add(&app_ball);
-
-    /* 9th slot: placeholder to complete 3x3 grid */
-    static const app_entry_t app_extra = {
-        .name = "More",
-        .create = app_dummy_create, .destroy = app_dummy_destroy, .resume = app_dummy_resume,
-    };
-    app_registry_add(&app_extra);
+    /* Build app registry: real apps first, placeholders for rest */
+    int idx = 0;
+    app_registry[idx++] = APP(settings);
+    app_registry[idx++] = APP(attitude);
+    app_registry[idx++] = PLACEHOLDER("Weather");
+    app_registry[idx++] = PLACEHOLDER("Voice AI");
+    app_registry[idx++] = PLACEHOLDER("Music");
+    app_registry[idx++] = PLACEHOLDER("Metronome");
+    app_registry[idx++] = PLACEHOLDER("Pedometer");
+    app_registry[idx++] = PLACEHOLDER("Ball");
+    app_registry[idx++] = PLACEHOLDER("More");
+    app_count = idx;
 
     /* Create all screens upfront */
     scr_blank = lv_obj_create(NULL);
