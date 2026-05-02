@@ -36,8 +36,8 @@ static void update_cb(lv_timer_t *t)
        Bubble goes to the HIGH side (opposite to tilt direction) */
     int half = BUBBLE_DIAM / 2;
     int limit = half - DOT_R;
-    int dx = (int)(-imu.accel_x * half);
-    int dy = (int)(-imu.accel_y * half);
+    int dx = (int)(-imu.accel_y * half);
+    int dy = (int)(-imu.accel_x * half);
     if (dx > limit) dx = limit;
     if (dx < -limit) dx = -limit;
     if (dy > limit) dy = limit;
