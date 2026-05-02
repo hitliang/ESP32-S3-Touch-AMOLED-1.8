@@ -35,8 +35,8 @@ static void update_cb(lv_timer_t *t)
     /* Bubble dot */
     int half = BUBBLE_DIAM / 2;
     int limit = half - DOT_R;
-    int dx = (int)(-r * 2.0f);  if (dx > limit) dx = limit; if (dx < -limit) dx = -limit;
-    int dy = (int)( p * 2.0f);  if (dy > limit) dy = limit; if (dy < -limit) dy = -limit;
+    int dx = (int)( r * 2.0f);  if (dx > limit) dx = limit; if (dx < -limit) dx = -limit;
+    int dy = (int)(-p * 2.0f);  if (dy > limit) dy = limit; if (dy < -limit) dy = -limit;
     lv_obj_set_pos(bubble_dot, dx + half - DOT_R, dy + half - DOT_R);
 }
 
