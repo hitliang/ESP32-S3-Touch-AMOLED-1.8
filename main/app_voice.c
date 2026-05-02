@@ -130,6 +130,9 @@ static int conv_y = 5;
 static uint8_t *audio_buf = NULL;
 static int audio_len = 0;
 
+/* Bring in CJK font (force linker to include it) */
+extern const lv_font_t lv_font_simsun_16_cjk;
+
 static int b64_decode(const char *in, uint8_t *out, int max)
 {
     static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -236,16 +239,18 @@ static char *llm_chat(const char *question)
         json_esc(question, e1, sizeof(e1)));
 
     printf("LLM: req=%d bytes, history=%d\n", off, history_count);
+    /* Print first 200 chars of body for debug */
+    printf("LLM: body=%.200s\n", body);
 
     uint8_t *buf = malloc(16384);
-    if (!buf) { free(body); return NULL; }
+    if (!buf) { printf("LLM: malloc fail\n"); free(body); return NULL; }
     int len, status;
     esp_err_t ret = http_post("https://api.deepseek.com/v1/chat/completions",
               body, "Authorization", "Bearer " DEEPSEEK_API_KEY, NULL, NULL,
               buf, 16384, &len, &status);
     free(body);
     printf("LLM: err=%d status=%d len=%d\n", ret, status, len);
-    if (len > 0 && len < 500) printf("LLM: body=%s\n", (char *)buf);
+    if (len > 0) printf("LLM: resp=%.400s\n", (char *)buf);
 
     char *reply = NULL;
     if (status == 200 && len > 0) {
@@ -319,7 +324,7 @@ static void add_msg(const char *prefix, const char *text, uint32_t color)
     lv_obj_t *l = lv_label_create(conv_area);
     lv_label_set_text_fmt(l, "%s%s", prefix, text);
     lv_obj_set_style_text_color(l, lv_color_hex(color), 0);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(l, &lv_font_simsun_16_cjk, 0);
     lv_obj_set_width(l, 310);
     lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
     lv_obj_set_pos(l, 10, conv_y);
@@ -338,17 +343,6 @@ static void ask_bg_task(void *arg)
     char *reply = llm_chat(question);
     if (reply) {
         history_add(question, reply);
-
-        /* TTS: speak the reply */
-        printf("VOICE: TTS start\n");
-        if (tts_speak(reply)) {
-            printf("VOICE: TTS got %d bytes\n", audio_len);
-            sys_audio_play_wav(audio_buf, audio_len);
-            free(audio_buf); audio_buf = NULL;
-        } else {
-            printf("VOICE: TTS failed\n");
-        }
-
         ask_result_text = reply;
         ask_state = 2;
     } else {
@@ -407,7 +401,7 @@ static void create(lv_obj_t *parent)
 
     lv_obj_t *t = lv_label_create(root);
     lv_label_set_text(t, "Voice AI  |  Hi Reddy!");
-    lv_obj_set_style_text_font(t, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(t, &lv_font_simsun_16_cjk, 0);
     lv_obj_set_style_text_color(t, lv_color_hex(0x8888cc), 0);
     lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 5);
 
