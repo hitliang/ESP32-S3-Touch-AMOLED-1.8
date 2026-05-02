@@ -1,6 +1,7 @@
 #include "app_weather.h"
 #include "sys_wifi.h"
 #include "sys_config.h"
+#include "secrets.h"
 #include "lvgl.h"
 #include "esp_http_client.h"
 #include "cJSON.h"
@@ -10,7 +11,6 @@
 
 static const char *TAG = "weather";
 
-#define QWEATHER_KEY  "YOUR_KEY_HERE"
 #define LOCATION_ID   "101010300"  /* Beijing Chaoyang */
 
 static lv_obj_t *root = NULL;
@@ -108,7 +108,7 @@ static void fetch_task(void *arg)
     char url[512];
     char key[128];
     sys_config_get_weather_key(key, sizeof(key));
-    if (key[0] == '\0') strncpy(key, QWEATHER_KEY, sizeof(key));
+    if (key[0] == '\0') strncpy(key, QWEATHER_API_KEY, sizeof(key));
 
     /* Current weather */
     snprintf(url, sizeof(url),

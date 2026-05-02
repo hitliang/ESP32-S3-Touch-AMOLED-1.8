@@ -27,3 +27,6 @@ __pycache__/
 
 # Demo directories (keep as reference, not in git)
 ESP-IDF-v5.3.2/
+
+# API keys and secrets — NEVER commit
+main/secrets.h
