@@ -88,28 +88,23 @@ nav_state_t app_framework_get_state(void)
 
 void app_framework_go_home(void)
 {
-    if (current_app) {
-        current_app->destroy();
-        current_app = NULL;
-    }
-    if (scr_app) {
-        lv_obj_del(scr_app);
-        scr_app = NULL;
-    }
+    /* Just switch screen, don't delete — safe to call from any context */
     nav_state = NAV_STATE_HOME;
-    load_screen_impl(scr_home, true);
+    load_screen_impl(scr_home, false);
     ui_home_update();
 }
 
 void app_framework_go_menu(void)
 {
     nav_state = NAV_STATE_MENU;
-    load_screen_impl(scr_menu, true);
+    load_screen_impl(scr_menu, false);
 }
 
 void app_framework_launch_app(int index)
 {
     if (index < 0 || index >= app_count) return;
+
+    /* Clean up old app if re-entering */
     if (current_app) {
         current_app->destroy();
         current_app = NULL;
@@ -186,14 +181,6 @@ const app_entry_t *app_framework_get_app(int index)
 
 void app_framework_screen_off(void)
 {
-    if (current_app) {
-        current_app->destroy();
-        current_app = NULL;
-    }
-    if (scr_app) {
-        lv_obj_del(scr_app);
-        scr_app = NULL;
-    }
     nav_state = NAV_STATE_HOME;
     load_screen_impl(scr_blank, false);
     sys_touch_set_enabled(false);
