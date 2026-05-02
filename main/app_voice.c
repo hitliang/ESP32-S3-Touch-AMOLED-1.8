@@ -12,7 +12,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define HISTORY_FILE  "voice_history.txt"
+#define HISTORY_FILE    "voice_history.txt"
+#define MAX_HISTORY     200     /* DeepSeek 1M context can handle many */
+#define MAX_MSG_LEN     1024    /* per-message limit */
+#define BODY_MAX        65536   /* LLM request body max */
 
 static const char *TAG = "voice";
 
@@ -31,9 +34,6 @@ static const char *SYSTEM_PROMPT =
     "- 可以偶尔加一个简单的emoji表情符号";
 
 /* ---- Conversation History ---- */
-#define MAX_HISTORY  20
-#define MAX_MSG_LEN  512
-
 static char  *history_user[MAX_HISTORY];
 static char  *history_asst[MAX_HISTORY];
 static int    history_count = 0;
@@ -79,29 +79,30 @@ static void history_load_from_sd(void)
 
 static void history_add(const char *user, const char *assistant)
 {
-    if (history_count >= MAX_HISTORY) {
-        /* Compress: merge oldest 4 exchanges into a summary */
-        char summary[1024];
-        int keep = MAX_HISTORY - 4;
+    if (history_count >= MAX_HISTORY - 5) {
+        /* Compress: merge oldest 10 exchanges into a summary */
+        char summary[2048];
+        int compress_n = 10;
+        int keep = history_count - compress_n;
         snprintf(summary, sizeof(summary),
                  "[Earlier conversation summary: ");
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < compress_n; i++) {
             int off = strlen(summary);
-            snprintf(summary + off, sizeof(summary) - off,
-                     "Q%d:%s A%d:%s ", i+1, history_user[i] ? history_user[i] : "",
-                     i+1, history_asst[i] ? history_asst[i] : "");
+            if (off < sizeof(summary) - 100) {
+                snprintf(summary + off, sizeof(summary) - off,
+                         "Q:%s A:%s ", history_user[i] ? history_user[i] : "",
+                         history_asst[i] ? history_asst[i] : "");
+            }
         }
         strncat(summary, "]", sizeof(summary) - strlen(summary) - 1);
 
-        /* Free old messages */
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < compress_n; i++) {
             free(history_user[i]); history_user[i] = NULL;
             free(history_asst[i]); history_asst[i] = NULL;
         }
-        /* Shift remaining */
         for (int i = 0; i < keep; i++) {
-            history_user[i] = history_user[i + 4];
-            history_asst[i] = history_asst[i + 4];
+            history_user[i] = history_user[i + compress_n];
+            history_asst[i] = history_asst[i + compress_n];
         }
         for (int i = keep; i < MAX_HISTORY; i++) {
             history_user[i] = NULL;
@@ -197,11 +198,11 @@ static char *llm_chat(const char *question)
 {
 
     /* Build messages array: system + history + current question */
-    char *body = malloc(16384);
+    char *body = malloc(BODY_MAX);
     if (!body) return NULL;
 
-    char e1[1024], e2[1024];
-    int off = snprintf(body, 16384,
+    char e1[2048], e2[2048];
+    int off = snprintf(body, BODY_MAX,
         "{\"model\":\"deepseek-chat\",\"messages\":["
         "{\"role\":\"system\",\"content\":\"%s\"}",
         json_esc(SYSTEM_PROMPT, e1, sizeof(e1)));
@@ -209,30 +210,32 @@ static char *llm_chat(const char *question)
     /* Add history (skip system-asst pseudo-messages from compression) */
     for (int i = 0; i < history_count; i++) {
         if (history_user[i]) {
-            off += snprintf(body + off, 16384 - off,
+            off += snprintf(body + off, BODY_MAX - off,
                 ",{\"role\":\"user\",\"content\":\"%s\"}",
                 json_esc(history_user[i], e1, sizeof(e1)));
         }
         if (history_asst[i] && strcmp(history_asst[i], "OK") != 0) {
-            off += snprintf(body + off, 16384 - off,
+            off += snprintf(body + off, BODY_MAX - off,
                 ",{\"role\":\"assistant\",\"content\":\"%s\"}",
                 json_esc(history_asst[i], e2, sizeof(e2)));
         }
+        /* If body getting too large, stop adding history */
+        if (off > BODY_MAX - 4096) break;
     }
 
     /* Current question */
-    off += snprintf(body + off, 16384 - off,
+    off += snprintf(body + off, BODY_MAX - off,
         ",{\"role\":\"user\",\"content\":\"%s\"}]}",
         json_esc(question, e1, sizeof(e1)));
 
     printf("LLM: req=%d bytes, history=%d\n", off, history_count);
 
-    uint8_t *buf = malloc(8192);
+    uint8_t *buf = malloc(16384);
     if (!buf) { free(body); return NULL; }
     int len, status;
     http_post("https://api.deepseek.com/v1/chat/completions",
               body, "Authorization", "Bearer " DEEPSEEK_API_KEY, NULL, NULL,
-              buf, 8192, &len, &status);
+              buf, 16384, &len, &status);
     free(body);
 
     char *reply = NULL;
