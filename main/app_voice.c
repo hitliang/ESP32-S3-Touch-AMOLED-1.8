@@ -318,39 +318,59 @@ static void add_msg(const char *prefix, const char *text, uint32_t color)
     lv_obj_scroll_to_y(conv_area, conv_y - 180, LV_ANIM_ON);
 }
 
-static void ask(const char *question)
-{
-    add_msg("You: ", question, 0x4488cc);
-    lv_label_set_text(status_lbl, "Thinking...");
-    lv_obj_set_style_text_color(status_lbl, lv_color_hex(0xccaa44), 0);
-    lv_timer_handler();
+/* Background task for LLM (avoid blocking LVGL) */
+static volatile int  ask_state = 0;    /* 0=idle, 1=running, 2=done, -1=error */
+static char *ask_result_text = NULL;
 
+static void ask_bg_task(void *arg)
+{
+    char *question = (char *)arg;
+    printf("VOICE: ask '%s'\n", question);
     char *reply = llm_chat(question);
     if (reply) {
         history_add(question, reply);
-        add_msg("AI: ", reply, 0x44cc88);
-
-        lv_label_set_text(status_lbl, "Speaking...");
-        lv_obj_set_style_text_color(status_lbl, lv_color_hex(0xcc8844), 0);
-        lv_timer_handler();
-
-        if (tts_speak(reply)) {
-            sys_audio_play_wav(audio_buf, audio_len);
-            free(audio_buf); audio_buf = NULL;
-        }
-        lv_label_set_text(status_lbl, "Ready");
-        lv_obj_set_style_text_color(status_lbl, lv_color_hex(0x888888), 0);
-        free(reply);
+        ask_result_text = reply;
+        ask_state = 2;
     } else {
-        add_msg("AI: ", "(error)", 0xcc4444);
-        lv_label_set_text(status_lbl, "Error");
-        lv_obj_set_style_text_color(status_lbl, lv_color_hex(0xcc4444), 0);
+        ask_state = -1;
     }
+    printf("VOICE: ask done state=%d\n", ask_state);
+    free(question);
+    vTaskDelete(NULL);
 }
 
-static void on_q1(lv_event_t *e) { ask("你好，我是瑞迪，你是谁呀？"); }
-static void on_q2(lv_event_t *e) { ask("今天在学校学了加法，有点难"); }
-static void on_q3(lv_event_t *e) { ask("给我讲一个小故事吧"); }
+static void ask_result_cb(lv_timer_t *t)
+{
+    if (ask_state == 0 || ask_state == 1) return;
+    lv_timer_del(t);
+
+    if (ask_state == 2 && ask_result_text) {
+        add_msg("AI: ", ask_result_text, 0x44cc88);
+        free(ask_result_text); ask_result_text = NULL;
+    } else {
+        add_msg("AI: ", "(error)", 0xcc4444);
+    }
+    ask_state = 0;
+    lv_label_set_text(status_lbl, "Ready");
+    lv_obj_set_style_text_color(status_lbl, lv_color_hex(0x888888), 0);
+}
+
+static void ask(const char *question)
+{
+    if (ask_state != 0) return;  /* busy */
+    add_msg("You: ", question, 0x4488cc);
+    lv_label_set_text(status_lbl, "Thinking...");
+    lv_obj_set_style_text_color(status_lbl, lv_color_hex(0xccaa44), 0);
+
+    ask_state = 1;
+    char *q = strdup(question);
+    xTaskCreate(ask_bg_task, "voice_bg", 16384, q, 3, NULL);
+    lv_timer_create(ask_result_cb, 300, NULL);
+}
+
+static void on_q1(lv_event_t *e) { ask("Hi, who are you?"); }
+static void on_q2(lv_event_t *e) { ask("I learned addition at school today, it was a bit hard"); }
+static void on_q3(lv_event_t *e) { ask("Tell me a short story"); }
 
 static void create(lv_obj_t *parent)
 {
