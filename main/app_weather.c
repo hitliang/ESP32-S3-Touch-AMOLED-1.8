@@ -105,6 +105,20 @@ static esp_err_t http_get(const char *url, char *buf, size_t buf_len)
 
 static void fetch_task(void *arg)
 {
+    /* Wait for WiFi up to 20s */
+    int wait = 0;
+    while (!sys_wifi_is_connected() && wait < 100) {
+        vTaskDelay(pdMS_TO_TICKS(200));
+        wait++;
+    }
+    if (!sys_wifi_is_connected()) {
+        snprintf(weather_text, sizeof(weather_text), "No WiFi");
+        snprintf(weather_temp, sizeof(weather_temp), "--");
+        data_ready = true;
+        vTaskDelete(NULL);
+        return;
+    }
+
     char url[512];
     char key[128];
     sys_config_get_weather_key(key, sizeof(key));
@@ -112,22 +126,24 @@ static void fetch_task(void *arg)
 
     /* Current weather */
     snprintf(url, sizeof(url),
-             "https://devapi.qweather.com/v7/weather/now?location=%s&key=%s",
-             LOCATION_ID, key);
+             "https://%s/v7/weather/now?location=%s&key=%s",
+             QWEATHER_API_HOST, LOCATION_ID, key);
 
     char buf[4096];
-    if (http_get(url, buf, sizeof(buf)) == ESP_OK) {
+    esp_err_t ret = http_get(url, buf, sizeof(buf));
+    if (ret == ESP_OK) {
         parse_current(buf);
     } else {
-        ESP_LOGW(TAG, "Failed to fetch current weather");
+        ESP_LOGW(TAG, "Weather fetch failed: %d", ret);
     }
 
     /* 3-day forecast */
     snprintf(url, sizeof(url),
-             "https://devapi.qweather.com/v7/weather/3d?location=%s&key=%s",
-             LOCATION_ID, key);
+             "https://%s/v7/weather/3d?location=%s&key=%s",
+             QWEATHER_API_HOST, LOCATION_ID, key);
 
-    if (http_get(url, buf, sizeof(buf)) == ESP_OK) {
+    ret = http_get(url, buf, sizeof(buf));
+    if (ret == ESP_OK) {
         parse_forecast(buf);
     }
 
