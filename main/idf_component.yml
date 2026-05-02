@@ -16,3 +16,5 @@ dependencies:
   lvgl/lvgl:
     version: "8.4.*"
     public: true
+
+  espressif/es8311: "^1.0.0"

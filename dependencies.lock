@@ -2,7 +2,7 @@ dependencies:
   esp_lcd_sh8601:
     dependencies: []
     source:
-      path: D:\ESP32-S3-Touch-AMOLED-1.8-main\ESP-IDF-v5.3.2\05_LVGL_WITH_RAM\components\esp_lcd_sh8601
+      path: D:\ESP32-S3-Touch-AMOLED-1.8-main\components\esp_lcd_sh8601
       type: local
     version: 1.0.0
   espressif/cmake_utilities:
@@ -15,6 +15,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 0.5.3
+  espressif/es8311:
+    component_hash: 46b3117250344bb03f143d5e2becf81cfb111679fbd7b95cefc2d302d36cc393
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4,<6.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.0~1
   espressif/esp_io_expander:
     component_hash: 7b7f91270172e46ca4597e3874f48d8412e280e8c295559f5922ec38656e3e5f
     dependencies:
@@ -42,13 +52,13 @@ dependencies:
   espressif/esp_lcd_touch:
     dependencies: []
     source:
-      path: D:\ESP32-S3-Touch-AMOLED-1.8-main\ESP-IDF-v5.3.2\05_LVGL_WITH_RAM\components\espressif__esp_lcd_touch
+      path: D:\ESP32-S3-Touch-AMOLED-1.8-main\components\espressif__esp_lcd_touch
       type: local
     version: 1.1.1
   espressif/esp_lcd_touch_ft5x06:
     dependencies: []
     source:
-      path: D:\ESP32-S3-Touch-AMOLED-1.8-main\ESP-IDF-v5.3.2\05_LVGL_WITH_RAM\components\espressif__esp_lcd_touch_ft5x06
+      path: D:\ESP32-S3-Touch-AMOLED-1.8-main\components\espressif__esp_lcd_touch_ft5x06
       type: local
     version: 1.0.6
   idf:
@@ -65,11 +75,12 @@ dependencies:
 direct_dependencies:
 - esp_lcd_sh8601
 - espressif/cmake_utilities
+- espressif/es8311
 - espressif/esp_io_expander_tca9554
 - espressif/esp_lcd_touch
 - espressif/esp_lcd_touch_ft5x06
 - idf
 - lvgl/lvgl
-manifest_hash: 73d297b75a367c5296e4d374a0f8c4b79f7221d608e54c991bf3dd251ed9384f
+manifest_hash: d21268c78e9a7f0e6ec87a9553c94204f555b0f16aa423510696fe890bce4df4
 target: esp32s3
 version: 2.0.0

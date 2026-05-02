@@ -18,4 +18,6 @@ idf_component_register(
         "app_ball.c"
         "app_snake.c"
         "app_weather.c"
+        "app_voice.c"
+        "sys_audio.c"
     INCLUDE_DIRS ".")
