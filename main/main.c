@@ -28,6 +28,14 @@ static void home_update_timer_cb(void *arg)
 {
     sys_battery_update();
 
+    /* Deferred init: run once after system is stable */
+    static int boot_ticks = 0;
+    if (boot_ticks == 3) {
+        sys_audio_init();
+        sys_sdcard_init();
+    }
+    boot_ticks++;
+
     if (sys_display_lock(200)) {
         /* Process pending button action */
         int act = pending_action;
@@ -94,9 +102,11 @@ void app_main(void)
     sys_config_init();
     sys_battery_init();
     sys_imu_init();
-    sys_audio_init();
-    sys_sdcard_init();
     sys_button_init();
+
+    /* Deferred init — may block if hardware not ready, do after UI stable */
+    /* sys_audio_init(); */
+    /* sys_sdcard_init(); */
 
     /* 5. WiFi (async, starts connecting in background) */
     sys_wifi_init();
