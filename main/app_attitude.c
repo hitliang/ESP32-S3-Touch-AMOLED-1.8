@@ -15,18 +15,20 @@ static lv_timer_t *update_timer = NULL;
 #define DOT_R          14
 
 static float cal_r = 0, cal_p = 0;
-static bool  calibrated = false;
+static int   cal_frames = 0;
 
 static void update_cb(lv_timer_t *t)
 {
     sys_imu_data_t imu;
     sys_imu_get_data(&imu);
 
-    /* Capture baseline offset on first frame (board assumed flat) */
-    if (!calibrated) {
-        cal_r = imu.roll;
-        cal_p = imu.pitch;
-        calibrated = true;
+    /* Calibrate after ~1s to let IMU filter settle */
+    if (cal_frames < 15) {
+        cal_frames++;
+        if (cal_frames == 15) {
+            cal_r = imu.roll;
+            cal_p = imu.pitch;
+        }
     }
 
     float r = imu.roll  - cal_r;
