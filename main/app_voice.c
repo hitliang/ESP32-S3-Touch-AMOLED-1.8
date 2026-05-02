@@ -164,7 +164,7 @@ static char *llm_chat(const char *question)
               body, "Authorization", "Bearer " DEEPSEEK_API_KEY, NULL, NULL,
               buf, 16384, &len, &status);
     free(body);
-    printf("LLM: s=%d l=%d\n", status, len);
+    printf("LLM: s=%d l=%d body=%.100s\n", status, len, (char*)buf);
 
     char *reply = NULL;
     if (status == 200 && len > 0) {
@@ -251,6 +251,16 @@ static void add_msg(const char *pfx, const char *txt, uint32_t color)
     lv_obj_scroll_to_y(conv_area, conv_y-180, LV_ANIM_ON);
 }
 
+static void tts_task(void *arg)
+{
+    char *t = (char*)arg;
+    printf("VOICE: TTS start\n");
+    if (tts_speak(t)) { sys_audio_play_wav(tts_audio, tts_len); free(tts_audio); tts_audio=NULL; }
+    else printf("VOICE: TTS fail\n");
+    free(t);
+    vTaskDelete(NULL);
+}
+
 static void ask_bg_task(void *arg)
 {
     char *q = (char*)arg;
@@ -258,8 +268,10 @@ static void ask_bg_task(void *arg)
     char *reply = llm_chat(q);
     if (reply) {
         history_add(q, reply); ask_result_text=reply; ask_state=2;
-        printf("VOICE: TTS...\n");
-        if (tts_speak(reply)) { sys_audio_play_wav(tts_audio, tts_len); free(tts_audio); tts_audio=NULL; }
+        printf("VOICE: LLM OK\n");
+        /* TTS in a separate task so it can't block LLM display */
+        char *tts_text = strdup(reply);
+        if (tts_text) xTaskCreate(tts_task, "tts", 16384, tts_text, 2, NULL);
     }
     else { ask_state=-1; printf("VOICE: fail\n"); }
     free(q);
@@ -306,7 +318,7 @@ static void audio_init_task(void *arg)
 static void create(lv_obj_t *parent)
 {
     conv_y=5; history_load_from_sd();
-    xTaskCreate(audio_init_task, "audio_init", 4096, NULL, 3, NULL);
+    xTaskCreate(audio_init_task, "audio_init", 8192, NULL, 3, NULL);
     root = lv_obj_create(parent);
     lv_obj_set_size(root, 340, 380);
     lv_obj_set_style_bg_color(root, lv_color_black(), 0);
