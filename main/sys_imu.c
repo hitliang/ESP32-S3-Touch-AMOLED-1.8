@@ -25,11 +25,12 @@ static const char *TAG = "sys_imu";
 
 #define WHOAMI_VAL             0x05
 
-/* Accel: 4G range, 1000Hz ODR */
-/* Gyro:  64DPS range, 896.8Hz ODR, LPF mode 3 */
-#define CTRL2_VAL  0x43   /* 4G + 1000Hz */
-#define CTRL3_VAL  0x53   /* 64DPS + 896.8Hz */
-#define CTRL5_VAL  0x6E   /* LPF: accel mode 0, gyro mode 3 */
+/* Accel: range=1(4G), ODR=3(1000Hz) → CTRL2 = (1<<4)|3 = 0x13 */
+/* Gyro:  range=2(64DPS), ODR=3(896.8Hz) → CTRL3 = (2<<4)|3 = 0x23 */
+/* CTRL5: LPF accel mode 0, gyro mode 3 → (0<<1)|(3<<5) = 0x60 */
+#define CTRL2_VAL  0x13
+#define CTRL3_VAL  0x23
+#define CTRL5_VAL  0x60
 #define CTRL7_VAL  0x03   /* Enable accel + gyro */
 #define CTRL8_VAL  0x80   /* STATUSINT.bit7 as CTRL9 handshake */
 
@@ -98,17 +99,17 @@ static void imu_read_task(void *arg)
         latest.gyro_y  = gy / 32.0f;
         latest.gyro_z  = gz / 32.0f;
 
-        /* Roll / Pitch — verify axes with logging */
-        float raw_r = atan2f(latest.accel_y, latest.accel_z) * 57.29578f;
-        float raw_p = atan2f(-latest.accel_x, latest.accel_z) * 57.29578f;
+        /* Roll / Pitch. az = -1G when flat (chip Z points up), so negate az */
+        float raw_r = atan2f(latest.accel_y, -latest.accel_z) * 57.29578f;
+        float raw_p = atan2f(-latest.accel_x, -latest.accel_z) * 57.29578f;
 
         /* Heavy low-pass filter for smooth display */
         float a = 0.05f;
         smooth_r = smooth_r * (1.0f - a) + raw_r * a;
         smooth_p = smooth_p * (1.0f - a) + raw_p * a;
 
-        if (fabsf(smooth_r) < 0.3f) smooth_r = 0;
-        if (fabsf(smooth_p) < 0.3f) smooth_p = 0;
+        if (fabsf(smooth_r) < 0.5f) smooth_r = 0;
+        if (fabsf(smooth_p) < 0.5f) smooth_p = 0;
 
         latest.roll  = smooth_r;
         latest.pitch = smooth_p;
