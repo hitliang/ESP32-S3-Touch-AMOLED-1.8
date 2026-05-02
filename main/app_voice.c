@@ -58,7 +58,7 @@ static bool tts_speak(const char *text)
              "{\"model\":\"mimo-v2.5-tts\","
              "\"messages\":[{\"role\":\"assistant\",\"content\":\"%s\"}],"
              "\"audio\":{\"format\":\"wav\",\"voice\":\"%s\"}}",
-             text, "茉莉");
+             text, "Chloe");
 
     char url[256];
     snprintf(url, sizeof(url), "https://api.xiaomimimo.com/v1/chat/completions");
