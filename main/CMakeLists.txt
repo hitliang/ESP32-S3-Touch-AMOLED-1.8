@@ -15,4 +15,5 @@ idf_component_register(
         "ui_menu.c"
         "app_settings.c"
         "app_attitude.c"
+        "app_ball.c"
     INCLUDE_DIRS ".")
