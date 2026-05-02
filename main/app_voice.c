@@ -1,5 +1,6 @@
 #include "app_voice.h"
 #include "sys_wifi.h"
+#include "sys_audio.h"
 #include "sys_sdcard.h"
 #include "secrets.h"
 #include "lvgl.h"
@@ -181,6 +182,55 @@ static char *llm_chat(const char *question)
     return reply;
 }
 
+/* ---- TTS ---- */
+static int b64_decode(const char *in, uint8_t *out, int max)
+{
+    static const char t[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    int len=0,bits=0,val=0;
+    for(const char *p=in;*p;p++){const char *c=strchr(t,*p);if(!c)continue;
+        val=(val<<6)|(int)(c-t);bits+=6;
+        if(bits>=8){bits-=8;if(len<max)out[len++]=(val>>bits)&0xFF;}}
+    return len;
+}
+
+static uint8_t *tts_audio; static int tts_len;
+
+static bool tts_speak(const char *text)
+{
+    char e[2048]; json_esc(text, e, sizeof(e));
+    char body[4096];
+    snprintf(body, sizeof(body),
+        "{\"model\":\"mimo-v2.5-tts\","
+        "\"messages\":[{\"role\":\"assistant\",\"content\":\"%s\"}],"
+        "\"audio\":{\"format\":\"wav\",\"voice\":\"Chloe\"}}", e);
+
+    uint8_t *buf = malloc(32768);
+    if (!buf) return false;
+    int len, status;
+    http_post("https://api.xiaomimimo.com/v1/chat/completions",
+              body, "api-key", MIMO_API_KEY, NULL, NULL, buf, 32768, &len, &status);
+    printf("TTS: s=%d l=%d\n", status, len);
+    bool ok = false;
+    if (status == 200 && len > 0) {
+        cJSON *root = cJSON_Parse((char*)buf);
+        if (root) {
+            cJSON *j = cJSON_GetObjectItem(root, "choices");
+            if (j) j = cJSON_GetArrayItem(j, 0);
+            if (j) j = cJSON_GetObjectItem(j, "message");
+            if (j) j = cJSON_GetObjectItem(j, "audio");
+            if (j) j = cJSON_GetObjectItem(j, "data");
+            if (j && j->valuestring) {
+                int bl = strlen(j->valuestring);
+                tts_audio = malloc(bl);
+                if (tts_audio) { tts_len = b64_decode(j->valuestring, tts_audio, bl); ok = tts_len>44; }
+            }
+            cJSON_Delete(root);
+        }
+    }
+    free(buf);
+    return ok;
+}
+
 /* ---- UI ---- */
 static lv_obj_t *root, *conv_area, *status_lbl;
 static int conv_y = 5;
@@ -206,7 +256,11 @@ static void ask_bg_task(void *arg)
     char *q = (char*)arg;
     printf("VOICE: ask wifi=%d heap=%lu\n", sys_wifi_is_connected(), esp_get_free_heap_size());
     char *reply = llm_chat(q);
-    if (reply) { history_add(q, reply); ask_result_text=reply; ask_state=2; }
+    if (reply) {
+        history_add(q, reply); ask_result_text=reply; ask_state=2;
+        printf("VOICE: TTS...\n");
+        if (tts_speak(reply)) { sys_audio_play_wav(tts_audio, tts_len); free(tts_audio); tts_audio=NULL; }
+    }
     else { ask_state=-1; printf("VOICE: fail\n"); }
     free(q);
     vTaskDelete(NULL);
@@ -241,9 +295,18 @@ static void on_q1(lv_event_t *e) { ask("Hi, who are you?"); }
 static void on_q2(lv_event_t *e) { ask("Tell me a short story"); }
 static void on_q3(lv_event_t *e) { ask("What is 1 plus 1?"); }
 
+static void audio_init_task(void *arg)
+{
+    printf("VOICE: audio init...\n");
+    sys_audio_init();
+    printf("VOICE: audio done\n");
+    vTaskDelete(NULL);
+}
+
 static void create(lv_obj_t *parent)
 {
     conv_y=5; history_load_from_sd();
+    xTaskCreate(audio_init_task, "audio_init", 4096, NULL, 3, NULL);
     root = lv_obj_create(parent);
     lv_obj_set_size(root, 340, 380);
     lv_obj_set_style_bg_color(root, lv_color_black(), 0);
