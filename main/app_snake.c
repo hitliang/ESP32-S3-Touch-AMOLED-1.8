@@ -16,6 +16,7 @@
 static lv_obj_t *root = NULL;
 static lv_obj_t *canvas = NULL;
 static lv_obj_t *lbl_score = NULL;
+static lv_obj_t *go_label = NULL;
 static lv_timer_t *timer = NULL;
 static lv_color_t *cbuf = NULL;
 
@@ -132,7 +133,7 @@ static void update_cb(lv_timer_t *t)
     /* Only change direction when tilt is significant (>0.15G) */
     if (fabsf(ax) > 0.2f || fabsf(ay) > 0.2f) {
         if (fabsf(ay) > fabsf(ax)) {
-            next_dir = (ay > 0) ? DIR_UP : DIR_DOWN;
+            next_dir = (ay > 0) ? DIR_DOWN : DIR_UP;
         } else {
             next_dir = (ax > 0) ? DIR_LEFT : DIR_RIGHT;
         }
@@ -190,28 +191,23 @@ static void update_cb(lv_timer_t *t)
     lv_label_set_text_fmt(lbl_score, "Score: %d", score);
     draw_board();
 
-    if (game_over) {
-        lv_obj_t *go = lv_label_create(root);
-        lv_label_set_text(go, "GAME OVER\nTap to restart");
-        lv_obj_set_style_text_align(go, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_color(go, lv_color_hex(0xff4444), 0);
-        lv_obj_set_style_text_font(go, &lv_font_montserrat_24, 0);
-        lv_obj_center(go);
+    if (game_over && !go_label) {
+        go_label = lv_label_create(root);
+        lv_label_set_text(go_label, "GAME OVER\nTap to restart");
+        lv_obj_set_style_text_align(go_label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_color(go_label, lv_color_hex(0xff4444), 0);
+        lv_obj_set_style_text_font(go_label, &lv_font_montserrat_24, 0);
+        lv_obj_center(go_label);
     }
 }
 
 static void on_tap(lv_event_t *e)
 {
     if (game_over) {
-        /* Clean up game over labels */
-        lv_obj_clean(root);
-        lv_obj_t *l = lv_label_create(root);
-        lv_label_set_text_fmt(l, "Score: %d", score);
-        lv_obj_set_style_text_color(l, lv_color_hex(0x8888cc), 0);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_16, 0);
-        lv_obj_align(l, LV_ALIGN_TOP_MID, 0, 5);
-        lbl_score = l;
+        if (go_label) { lv_obj_del(go_label); go_label = NULL; }
         reset_game();
+        draw_board();
+        lv_label_set_text_fmt(lbl_score, "Score: %d", score);
     }
 }
 
