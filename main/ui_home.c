@@ -1,6 +1,7 @@
 #include "ui_home.h"
 #include "sys_battery.h"
 #include "sys_wifi.h"
+#include "audio_test.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include <time.h>
@@ -68,6 +69,16 @@ lv_obj_t *ui_home_create(lv_obj_t *scr)
     lv_obj_set_style_bg_opa(accent, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(accent, 0, 0);
     lv_obj_align(accent, LV_ALIGN_CENTER, 0, 45);
+
+    /* ---- Audio test button ---- */
+    lv_obj_t *abtn = lv_btn_create(scr);
+    lv_obj_set_size(abtn, 70, 30);
+    lv_obj_align(abtn, LV_ALIGN_BOTTOM_LEFT, 10, -15);
+    lv_obj_t *albl = lv_label_create(abtn);
+    lv_label_set_text(albl, "Sound");
+    lv_obj_center(albl);
+    lv_obj_set_style_text_font(albl, &lv_font_montserrat_12, 0);
+    lv_obj_add_event_cb(abtn, (lv_event_cb_t)audio_test_play, LV_EVENT_CLICKED, NULL);
 
     /* ---- Swipe hint: bottom, subtle ---- */
     lv_obj_t *hint = lv_label_create(scr);

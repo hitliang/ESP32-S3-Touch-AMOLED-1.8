@@ -20,4 +20,5 @@ idf_component_register(
         "app_weather.c"
         "app_voice.c"
         "sys_audio.c"
+        "audio_test.c"
     INCLUDE_DIRS ".")
