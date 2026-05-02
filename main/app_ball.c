@@ -29,8 +29,8 @@ static void update_cb(lv_timer_t *t)
     sys_imu_get_data(&imu);
 
     /* Gravity from board tilt: ax = left/right, ay = forward/back */
-    float gx = imu.accel_y * G_SCALE;
-    float gy = imu.accel_x * G_SCALE;
+    float gx = -imu.accel_y * G_SCALE;
+    float gy =  imu.accel_x * G_SCALE;
 
     float dt = 0.016f;  /* ~60fps step */
 
