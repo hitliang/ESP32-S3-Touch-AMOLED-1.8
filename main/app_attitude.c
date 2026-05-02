@@ -4,49 +4,56 @@
 #include <math.h>
 #include <stdio.h>
 
-static lv_obj_t *root   = NULL;
-static lv_obj_t *arc_roll  = NULL;
-static lv_obj_t *arc_pitch = NULL;
-static lv_obj_t *lbl_roll  = NULL;
-static lv_obj_t *lbl_pitch = NULL;
-static lv_obj_t *bubble_container = NULL;
-static lv_obj_t *bubble_dot = NULL;
+static lv_obj_t *root = NULL;
+static lv_obj_t *arc_roll = NULL, *arc_pitch = NULL;
+static lv_obj_t *lbl_roll = NULL, *lbl_pitch = NULL;
+static lv_obj_t *lbl_angle = NULL;
+static lv_obj_t *bubble_cont = NULL, *bubble_dot = NULL;
 static lv_timer_t *update_timer = NULL;
 
-#define BUBBLE_R    90
-#define DOT_R       12
+#define BUBBLE_DIAM   160
+#define DOT_R          14
 
 static void update_cb(lv_timer_t *t)
 {
     sys_imu_data_t imu;
     sys_imu_get_data(&imu);
 
-    float roll  = imu.roll;
-    float pitch = imu.pitch;
+    float r = imu.roll;
+    float p = imu.pitch;
 
-    /* Roll arc: -90..+90, vertical arc on left */
-    int r_val = (int)roll + 90;  /* map to 0..180 for arc */
-    if (r_val < 0) r_val = 0;
-    if (r_val > 180) r_val = 180;
-    lv_arc_set_value(arc_roll, r_val);
+    /* Map -90..+90 to 0..180 for the arc */
+    int rv = (int)(r + 90.0f); if (rv < 0) rv = 0; if (rv > 180) rv = 180;
+    int pv = (int)(p + 90.0f); if (pv < 0) pv = 0; if (pv > 180) pv = 180;
+    lv_arc_set_value(arc_roll, rv);
+    lv_arc_set_value(arc_pitch, pv);
 
-    /* Pitch arc: -90..+90, vertical arc on right */
-    int p_val = (int)pitch + 90;
-    if (p_val < 0) p_val = 0;
-    if (p_val > 180) p_val = 180;
-    lv_arc_set_value(arc_pitch, p_val);
+    lv_label_set_text_fmt(lbl_roll,  " %+.1f ", r);
+    lv_label_set_text_fmt(lbl_pitch, " %+.1f ", p);
+    lv_label_set_text_fmt(lbl_angle, "R:%+.1f  P:%+.1f", r, p);
 
-    lv_label_set_text_fmt(lbl_roll,  "R: %+.1f", roll);
-    lv_label_set_text_fmt(lbl_pitch, "P: %+.1f", pitch);
+    /* Bubble dot */
+    int half = BUBBLE_DIAM / 2;
+    int limit = half - DOT_R;
+    int dx = (int)(-r * 2.0f);  if (dx > limit) dx = limit; if (dx < -limit) dx = -limit;
+    int dy = (int)( p * 2.0f);  if (dy > limit) dy = limit; if (dy < -limit) dy = -limit;
+    lv_obj_set_pos(bubble_dot, dx + half - DOT_R, dy + half - DOT_R);
+}
 
-    /* Bubble level: dot moves opposite to tilt */
-    int dx = (int)(-roll  * 1.5f);
-    int dy = (int)( pitch * 1.5f);
-    if (dx > BUBBLE_R - DOT_R) dx = BUBBLE_R - DOT_R;
-    if (dx < -(BUBBLE_R - DOT_R)) dx = -(BUBBLE_R - DOT_R);
-    if (dy > BUBBLE_R - DOT_R) dy = BUBBLE_R - DOT_R;
-    if (dy < -(BUBBLE_R - DOT_R)) dy = -(BUBBLE_R - DOT_R);
-    lv_obj_set_pos(bubble_dot, dx + BUBBLE_R - DOT_R, dy + BUBBLE_R - DOT_R);
+static lv_obj_t *make_arc(lv_obj_t *parent, uint32_t color, uint32_t bg, int align, int ox)
+{
+    lv_obj_t *arc = lv_arc_create(parent);
+    lv_obj_set_size(arc, 150, 150);
+    lv_obj_align(arc, align, ox, 35);
+    lv_arc_set_rotation(arc, 270);
+    lv_arc_set_range(arc, 0, 180);
+    lv_arc_set_bg_angles(arc, 0, 180);
+    lv_obj_set_style_arc_color(arc, lv_color_hex(color), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(arc, lv_color_hex(bg), LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arc, 10, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(arc, 10, LV_PART_MAIN);
+    lv_obj_remove_style(arc, NULL, LV_PART_KNOB);
+    return arc;
 }
 
 static void create(lv_obj_t *parent)
@@ -55,96 +62,105 @@ static void create(lv_obj_t *parent)
     lv_obj_set_size(root, 340, 390);
     lv_obj_set_style_bg_color(root, lv_color_black(), 0);
     lv_obj_set_style_border_width(root, 0, 0);
+    lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(root, LV_SCROLLBAR_MODE_OFF);
 
-    /* ---- Roll arc (left side, vertical half-circle) ---- */
-    arc_roll = lv_arc_create(root);
-    lv_obj_set_size(arc_roll, 140, 140);
-    lv_obj_align(arc_roll, LV_ALIGN_TOP_LEFT, 15, 10);
-    lv_arc_set_rotation(arc_roll, 270);
-    lv_arc_set_range(arc_roll, 0, 180);
-    lv_arc_set_bg_angles(arc_roll, 0, 180);
-    lv_obj_set_style_arc_color(arc_roll, lv_color_hex(0x4488cc), LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(arc_roll, lv_color_hex(0x222244), LV_PART_MAIN);
-    lv_obj_set_style_arc_width(arc_roll, 8, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(arc_roll, 8, LV_PART_MAIN);
-    lv_obj_remove_style(arc_roll, NULL, LV_PART_KNOB);
+    /* Section title */
+    lv_obj_t *t = lv_label_create(root);
+    lv_label_set_text(t, "ATTITUDE");
+    lv_obj_set_style_text_font(t, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(t, lv_color_hex(0x556688), 0);
+    lv_obj_align(t, LV_ALIGN_TOP_MID, 0, 5);
 
+    /* Roll arc (left) */
+    arc_roll = make_arc(root, 0x4488cc, 0x1a2244, LV_ALIGN_TOP_LEFT, 15);
     lbl_roll = lv_label_create(root);
-    lv_label_set_text(lbl_roll, "R: +0.0");
+    lv_obj_set_style_text_font(lbl_roll, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(lbl_roll, lv_color_hex(0x4488cc), 0);
-    lv_obj_align(lbl_roll, LV_ALIGN_TOP_LEFT, 45, 130);
+    lv_label_set_text(lbl_roll, " +0.0 ");
+    lv_obj_align(lbl_roll, LV_ALIGN_TOP_LEFT, 35, 165);
 
-    /* Roll label */
     lv_obj_t *lt = lv_label_create(root);
     lv_label_set_text(lt, "ROLL");
-    lv_obj_set_style_text_font(lt, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(lt, lv_color_hex(0x666688), 0);
-    lv_obj_align(lt, LV_ALIGN_TOP_LEFT, 55, 5);
+    lv_obj_set_style_text_font(lt, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lt, lv_color_hex(0x556688), 0);
+    lv_obj_align(lt, LV_ALIGN_TOP_LEFT, 60, 145);
 
-    /* ---- Pitch arc (right side) ---- */
-    arc_pitch = lv_arc_create(root);
-    lv_obj_set_size(arc_pitch, 140, 140);
-    lv_obj_align(arc_pitch, LV_ALIGN_TOP_RIGHT, -15, 10);
-    lv_arc_set_rotation(arc_pitch, 270);
-    lv_arc_set_range(arc_pitch, 0, 180);
-    lv_arc_set_bg_angles(arc_pitch, 0, 180);
-    lv_obj_set_style_arc_color(arc_pitch, lv_color_hex(0xcc8844), LV_PART_INDICATOR);
-    lv_obj_set_style_arc_color(arc_pitch, lv_color_hex(0x442222), LV_PART_MAIN);
-    lv_obj_set_style_arc_width(arc_pitch, 8, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(arc_pitch, 8, LV_PART_MAIN);
-    lv_obj_remove_style(arc_pitch, NULL, LV_PART_KNOB);
-
+    /* Pitch arc (right) */
+    arc_pitch = make_arc(root, 0xcc8844, 0x2a1a14, LV_ALIGN_TOP_RIGHT, -15);
     lbl_pitch = lv_label_create(root);
-    lv_label_set_text(lbl_pitch, "P: +0.0");
+    lv_obj_set_style_text_font(lbl_pitch, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(lbl_pitch, lv_color_hex(0xcc8844), 0);
-    lv_obj_align(lbl_pitch, LV_ALIGN_TOP_RIGHT, -45, 130);
+    lv_label_set_text(lbl_pitch, " +0.0 ");
+    lv_obj_align(lbl_pitch, LV_ALIGN_TOP_RIGHT, -35, 165);
 
     lt = lv_label_create(root);
     lv_label_set_text(lt, "PITCH");
-    lv_obj_set_style_text_font(lt, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(lt, lv_color_hex(0x666688), 0);
-    lv_obj_align(lt, LV_ALIGN_TOP_RIGHT, -45, 5);
+    lv_obj_set_style_text_font(lt, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lt, lv_color_hex(0x556688), 0);
+    lv_obj_align(lt, LV_ALIGN_TOP_RIGHT, -55, 145);
 
-    /* ---- Bubble level (bottom) ---- */
-    bubble_container = lv_obj_create(root);
-    lv_obj_set_size(bubble_container, BUBBLE_R * 2 + 4, BUBBLE_R * 2 + 4);
-    lv_obj_align(bubble_container, LV_ALIGN_BOTTOM_MID, 0, -10);
-    lv_obj_set_style_bg_color(bubble_container, lv_color_hex(0x111122), 0);
-    lv_obj_set_style_border_color(bubble_container, lv_color_hex(0x333355), 0);
-    lv_obj_set_style_border_width(bubble_container, 2, 0);
-    lv_obj_set_style_radius(bubble_container, BUBBLE_R + 2, 0);
+    /* Angle readout */
+    lbl_angle = lv_label_create(root);
+    lv_obj_set_style_text_font(lbl_angle, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(lbl_angle, lv_color_hex(0x778899), 0);
+    lv_label_set_text(lbl_angle, "R:+0.0  P:+0.0");
+    lv_obj_align(lbl_angle, LV_ALIGN_TOP_MID, 0, 200);
 
-    /* Crosshair */
-    lv_obj_t *hline = lv_obj_create(bubble_container);
-    lv_obj_set_size(hline, BUBBLE_R * 2, 1);
-    lv_obj_center(hline);
-    lv_obj_set_style_bg_color(hline, lv_color_hex(0x333355), 0);
-    lv_obj_set_style_border_width(hline, 0, 0);
+    /* Bubble level */
+    int half = BUBBLE_DIAM / 2;
+    bubble_cont = lv_obj_create(root);
+    lv_obj_set_size(bubble_cont, BUBBLE_DIAM, BUBBLE_DIAM);
+    lv_obj_align(bubble_cont, LV_ALIGN_BOTTOM_MID, 0, -5);
+    lv_obj_set_style_bg_color(bubble_cont, lv_color_hex(0x0a0a18), 0);
+    lv_obj_set_style_border_color(bubble_cont, lv_color_hex(0x333355), 0);
+    lv_obj_set_style_border_width(bubble_cont, 2, 0);
+    lv_obj_set_style_radius(bubble_cont, half, 0);
+    lv_obj_clear_flag(bubble_cont, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(bubble_cont, LV_SCROLLBAR_MODE_OFF);
 
-    lv_obj_t *vline = lv_obj_create(bubble_container);
-    lv_obj_set_size(vline, 1, BUBBLE_R * 2);
-    lv_obj_center(vline);
-    lv_obj_set_style_bg_color(vline, lv_color_hex(0x333355), 0);
-    lv_obj_set_style_border_width(vline, 0, 0);
+    /* Crosshair lines */
+    lv_obj_t *hl = lv_obj_create(bubble_cont);
+    lv_obj_set_size(hl, BUBBLE_DIAM - 20, 1);
+    lv_obj_center(hl);
+    lv_obj_set_style_bg_color(hl, lv_color_hex(0x222244), 0);
+    lv_obj_set_style_border_width(hl, 0, 0);
+    lv_obj_clear_flag(hl, LV_OBJ_FLAG_CLICKABLE);
 
-    /* Moving dot */
-    bubble_dot = lv_obj_create(bubble_container);
+    lv_obj_t *vl = lv_obj_create(bubble_cont);
+    lv_obj_set_size(vl, 1, BUBBLE_DIAM - 20);
+    lv_obj_center(vl);
+    lv_obj_set_style_bg_color(vl, lv_color_hex(0x222244), 0);
+    lv_obj_set_style_border_width(vl, 0, 0);
+    lv_obj_clear_flag(vl, LV_OBJ_FLAG_CLICKABLE);
+
+    /* Center ring */
+    lv_obj_t *ring = lv_obj_create(bubble_cont);
+    lv_obj_set_size(ring, 20, 20);
+    lv_obj_center(ring);
+    lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_color(ring, lv_color_hex(0x334466), 0);
+    lv_obj_set_style_border_width(ring, 1, 0);
+    lv_obj_set_style_radius(ring, 10, 0);
+    lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE);
+
+    /* Bubble dot */
+    bubble_dot = lv_obj_create(bubble_cont);
     lv_obj_set_size(bubble_dot, DOT_R * 2, DOT_R * 2);
-    lv_obj_set_style_bg_color(bubble_dot, lv_color_hex(0x44cc88), 0);
+    lv_obj_set_style_bg_color(bubble_dot, lv_color_hex(0x44ee88), 0);
     lv_obj_set_style_radius(bubble_dot, DOT_R, 0);
     lv_obj_set_style_border_width(bubble_dot, 0, 0);
-    lv_obj_set_style_shadow_color(bubble_dot, lv_color_hex(0x44cc88), 0);
-    lv_obj_set_style_shadow_width(bubble_dot, 12, 0);
-    lv_obj_set_pos(bubble_dot, BUBBLE_R - DOT_R, BUBBLE_R - DOT_R);
+    lv_obj_set_style_shadow_color(bubble_dot, lv_color_hex(0x44ee88), 0);
+    lv_obj_set_style_shadow_width(bubble_dot, 16, 0);
+    lv_obj_clear_flag(bubble_dot, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_pos(bubble_dot, half - DOT_R, half - DOT_R);
 
-    /* Level label */
     lt = lv_label_create(root);
-    lv_label_set_text(lt, "BUBBLE LEVEL");
-    lv_obj_set_style_text_font(lt, &lv_font_montserrat_16, 0);
-    lv_obj_set_style_text_color(lt, lv_color_hex(0x666688), 0);
-    lv_obj_align(lt, LV_ALIGN_BOTTOM_MID, 0, -10 - BUBBLE_R * 2 - 20);
+    lv_label_set_text(lt, "LEVEL");
+    lv_obj_set_style_text_font(lt, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(lt, lv_color_hex(0x556688), 0);
+    lv_obj_align(lt, LV_ALIGN_BOTTOM_MID, 0, -BUBBLE_DIAM - 20);
 
-    /* Update timer at ~15Hz */
     update_timer = lv_timer_create(update_cb, 66, NULL);
 }
 
