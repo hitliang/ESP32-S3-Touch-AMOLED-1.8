@@ -28,14 +28,6 @@ static void home_update_timer_cb(void *arg)
 {
     sys_battery_update();
 
-    /* Deferred init: run once after system is stable */
-    static int boot_ticks = 0;
-    if (boot_ticks == 3) {
-        sys_audio_init();
-        sys_sdcard_init();
-    }
-    boot_ticks++;
-
     if (sys_display_lock(200)) {
         /* Process pending button action */
         int act = pending_action;
