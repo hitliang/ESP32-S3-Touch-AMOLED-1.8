@@ -163,7 +163,7 @@ void sys_imu_init(void)
         init_ok = true;
     }
 
-    xTaskCreate(imu_read_task, "IMU", 2048, NULL, 5, NULL);
+    xTaskCreate(imu_read_task, "IMU", 4096, NULL, 5, NULL);
     ESP_LOGI(TAG, "IMU task started (ok=%d)", init_ok);
 }
 

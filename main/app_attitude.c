@@ -14,25 +14,13 @@ static lv_timer_t *update_timer = NULL;
 #define BUBBLE_DIAM   160
 #define DOT_R          14
 
-static float cal_r = 0, cal_p = 0;
-static int   cal_frames = 0;
-
 static void update_cb(lv_timer_t *t)
 {
     sys_imu_data_t imu;
     sys_imu_get_data(&imu);
 
-    /* Calibrate after ~1s to let IMU filter settle */
-    if (cal_frames < 15) {
-        cal_frames++;
-        if (cal_frames == 15) {
-            cal_r = imu.roll;
-            cal_p = imu.pitch;
-        }
-    }
-
-    float r = imu.roll  - cal_r;
-    float p = imu.pitch - cal_p;
+    float r = imu.roll;
+    float p = imu.pitch;
 
     /* Map -90..+90 to 0..180 for the arc */
     int rv = (int)(r + 90.0f); if (rv < 0) rv = 0; if (rv > 180) rv = 180;
@@ -44,11 +32,16 @@ static void update_cb(lv_timer_t *t)
     lv_label_set_text_fmt(lbl_pitch, " %+.1f ", p);
     lv_label_set_text_fmt(lbl_angle, "R:%+.1f  P:%+.1f", r, p);
 
-    /* Bubble dot — moves to high side (opposite to tilt) */
+    /* Bubble — use accel directly: ax = left/right tilt, ay = forward/back tilt
+       Bubble goes to the HIGH side (opposite to tilt direction) */
     int half = BUBBLE_DIAM / 2;
     int limit = half - DOT_R;
-    int dx = (int)( r * 2.0f);  if (dx > limit) dx = limit; if (dx < -limit) dx = -limit;
-    int dy = (int)( p * 2.0f);  if (dy > limit) dy = limit; if (dy < -limit) dy = -limit;
+    int dx = (int)(-imu.accel_x * half);
+    int dy = (int)(-imu.accel_y * half);
+    if (dx > limit) dx = limit;
+    if (dx < -limit) dx = -limit;
+    if (dy > limit) dy = limit;
+    if (dy < -limit) dy = -limit;
     lv_obj_set_pos(bubble_dot, dx + half - DOT_R, dy + half - DOT_R);
 }
 
