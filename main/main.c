@@ -6,6 +6,7 @@
 #include "sys_imu.h"
 #include "sys_button.h"
 #include "sys_audio.h"
+#include "sys_sdcard.h"
 #include "sys_config.h"
 #include "app_framework.h"
 #include "ui_home.h"
@@ -94,6 +95,7 @@ void app_main(void)
     sys_battery_init();
     sys_imu_init();
     sys_audio_init();
+    sys_sdcard_init();
     sys_button_init();
 
     /* 5. WiFi (async, starts connecting in background) */

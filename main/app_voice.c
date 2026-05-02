@@ -1,6 +1,7 @@
 #include "app_voice.h"
 #include "sys_wifi.h"
 #include "sys_audio.h"
+#include "sys_sdcard.h"
 #include "secrets.h"
 #include "lvgl.h"
 #include "esp_http_client.h"
@@ -10,6 +11,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#define HISTORY_FILE  "voice_history.txt"
 
 static const char *TAG = "voice";
 
@@ -34,6 +37,45 @@ static const char *SYSTEM_PROMPT =
 static char  *history_user[MAX_HISTORY];
 static char  *history_asst[MAX_HISTORY];
 static int    history_count = 0;
+
+/* ---- SD Card Persistence ---- */
+static void history_save_to_sd(void)
+{
+    if (!sys_sdcard_mounted()) return;
+    char path[128];
+    snprintf(path, sizeof(path), "%s/" HISTORY_FILE, sys_sdcard_mount_point());
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    for (int i = 0; i < history_count; i++) {
+        if (history_user[i]) fprintf(f, "U:%s\n", history_user[i]);
+        if (history_asst[i]) fprintf(f, "A:%s\n", history_asst[i]);
+    }
+    fclose(f);
+    printf("VOICE: saved %d exchanges to SD\n", history_count);
+}
+
+static void history_load_from_sd(void)
+{
+    if (!sys_sdcard_mounted()) return;
+    char path[128];
+    snprintf(path, sizeof(path), "%s/" HISTORY_FILE, sys_sdcard_mount_point());
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+
+    char line[1024];
+    while (fgets(line, sizeof(line), f) && history_count < MAX_HISTORY) {
+        int len = strlen(line);
+        if (len > 0 && line[len-1] == '\n') line[len-1] = 0;
+        if (line[0] == 'U' && line[1] == ':') {
+            history_user[history_count] = strdup(line + 2);
+        } else if (line[0] == 'A' && line[1] == ':') {
+            history_asst[history_count] = strdup(line + 2);
+            history_count++;
+        }
+    }
+    fclose(f);
+    printf("VOICE: loaded %d exchanges from SD\n", history_count);
+}
 
 static void history_add(const char *user, const char *assistant)
 {
@@ -76,6 +118,9 @@ static void history_add(const char *user, const char *assistant)
     history_user[history_count] = user ? strdup(user) : strdup("");
     history_asst[history_count] = assistant ? strdup(assistant) : strdup("");
     history_count++;
+
+    /* Persist to SD card */
+    history_save_to_sd();
 }
 
 /* ---- UI ---- */
@@ -307,6 +352,10 @@ static void on_q3(lv_event_t *e) { ask("给我讲一个小故事吧"); }
 static void create(lv_obj_t *parent)
 {
     conv_y = 5;
+
+    /* Load conversation history from SD card */
+    history_load_from_sd();
+
     root = lv_obj_create(parent);
     lv_obj_set_size(root, 340, 380);
     lv_obj_set_style_bg_color(root, lv_color_black(), 0);
