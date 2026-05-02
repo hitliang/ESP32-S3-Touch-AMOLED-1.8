@@ -132,9 +132,9 @@ static void update_cb(lv_timer_t *t)
     /* Only change direction when tilt is significant (>0.15G) */
     if (fabsf(ax) > 0.2f || fabsf(ay) > 0.2f) {
         if (fabsf(ay) > fabsf(ax)) {
-            next_dir = (ay > 0) ? DIR_DOWN : DIR_UP;
+            next_dir = (ay > 0) ? DIR_UP : DIR_DOWN;
         } else {
-            next_dir = (ax > 0) ? DIR_RIGHT : DIR_LEFT;
+            next_dir = (ax > 0) ? DIR_LEFT : DIR_RIGHT;
         }
     }
 
