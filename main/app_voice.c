@@ -185,9 +185,16 @@ static esp_err_t http_post(const char *url, const char *body,
 static char *json_esc(const char *s, char *buf, int max)
 {
     char *d = buf;
-    while (*s && d < buf + max - 2) {
-        if (*s == '"' || *s == '\\') *d++ = '\\';
-        *d++ = *s++;
+    while (*s && d < buf + max - 6) {
+        switch (*s) {
+        case '"':  *d++ = '\\'; *d++ = '"';  break;
+        case '\\': *d++ = '\\'; *d++ = '\\'; break;
+        case '\n': *d++ = '\\'; *d++ = 'n';  break;
+        case '\r': *d++ = '\\'; *d++ = 'r';  break;
+        case '\t': *d++ = '\\'; *d++ = 't';  break;
+        default:   *d++ = *s; break;
+        }
+        s++;
     }
     *d = 0;
     return buf;
@@ -233,10 +240,12 @@ static char *llm_chat(const char *question)
     uint8_t *buf = malloc(16384);
     if (!buf) { free(body); return NULL; }
     int len, status;
-    http_post("https://api.deepseek.com/v1/chat/completions",
+    esp_err_t ret = http_post("https://api.deepseek.com/v1/chat/completions",
               body, "Authorization", "Bearer " DEEPSEEK_API_KEY, NULL, NULL,
               buf, 16384, &len, &status);
     free(body);
+    printf("LLM: err=%d status=%d len=%d\n", ret, status, len);
+    if (len > 0 && len < 500) printf("LLM: body=%s\n", (char *)buf);
 
     char *reply = NULL;
     if (status == 200 && len > 0) {
