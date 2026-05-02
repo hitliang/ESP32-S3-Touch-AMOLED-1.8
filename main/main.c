@@ -20,17 +20,25 @@ static void gesture_handler(lv_dir_t dir)
 }
 
 static bool screen_on = true;
+static volatile int pending_action = 0;  /* 0=none, 1=go_home, 2=screen_off, 3=screen_on */
 
 static void home_update_timer_cb(void *arg)
 {
-    /* Update system data every second */
     sys_battery_update();
 
-    if (screen_on && app_framework_get_state() == NAV_STATE_HOME) {
-        if (sys_display_lock(100)) {
+    if (sys_display_lock(200)) {
+        /* Process pending button action */
+        int act = pending_action;
+        pending_action = 0;
+        if (act == 1)       app_framework_go_home();
+        else if (act == 2)  app_framework_screen_off();
+        else if (act == 3)  app_framework_screen_on();
+
+        /* Update home screen */
+        if (screen_on && app_framework_get_state() == NAV_STATE_HOME) {
             ui_home_update();
-            sys_display_unlock();
         }
+        sys_display_unlock();
     }
 }
 
@@ -38,26 +46,18 @@ static void button_timer_cb(void *arg)
 {
     if (!sys_button_poll()) return;
 
-    if (sys_display_lock(500)) {
-        if (!screen_on) {
-            /* Wake up */
-            ESP_LOGI(TAG, "Screen ON");
-            app_framework_screen_on();
-            screen_on = true;
+    /* Just set flag, let home_update_timer do the LVGL work safely */
+    if (!screen_on) {
+        screen_on = true;
+        pending_action = 3;  /* screen_on */
+    } else {
+        nav_state_t st = app_framework_get_state();
+        if (st == NAV_STATE_HOME) {
+            screen_on = false;
+            pending_action = 2;  /* screen_off */
         } else {
-            nav_state_t st = app_framework_get_state();
-            if (st == NAV_STATE_HOME) {
-                /* Home → screen off */
-                ESP_LOGI(TAG, "Screen OFF");
-                app_framework_screen_off();
-                screen_on = false;
-            } else {
-                /* App or Menu → back to home */
-                ESP_LOGI(TAG, "Back to home");
-                app_framework_go_home();
-            }
+            pending_action = 1;  /* go_home */
         }
-        sys_display_unlock();
     }
 }
 
