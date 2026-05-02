@@ -259,9 +259,7 @@ static void ask_bg_task(void *arg)
     char *reply = llm_chat(q);
     if (reply) {
         history_add(q, reply); ask_result_text=reply; ask_state=2;
-        printf("VOICE: TTS...\n");
         tts_play(reply);
-        printf("VOICE: TTS done\n");
     }
     else { ask_state=-1; printf("VOICE: fail\n"); }
     free(q);
@@ -297,12 +295,16 @@ static void on_q1(lv_event_t *e) { ask("Hi, who are you?"); }
 static void on_q2(lv_event_t *e) { ask("Tell me a short story"); }
 static void on_q3(lv_event_t *e) { ask("What is 1 plus 1?"); }
 
-static void audio_init_bg(void *arg) { sys_audio_init(); vTaskDelete(NULL); }
+static void audio_timer_cb(lv_timer_t *t)
+{
+    lv_timer_del(t);
+    sys_audio_init();
+}
 
 static void create(lv_obj_t *parent)
 {
     conv_y=5; history_load_from_sd();
-    xTaskCreate(audio_init_bg, "auinit", 4096, NULL, 3, NULL);
+    lv_timer_create(audio_timer_cb, 1000, NULL);  /* delayed, avoid LVGL lock */
     root = lv_obj_create(parent);
     lv_obj_set_size(root, 340, 380);
     lv_obj_set_style_bg_color(root, lv_color_black(), 0);
