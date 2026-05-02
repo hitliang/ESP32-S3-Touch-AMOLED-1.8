@@ -10,100 +10,119 @@
 #include <stdio.h>
 
 static const char *TAG = "weather";
-#define LOCATION_ID   "101010300"
+#define CITY_CODE  "110105"  /* Beijing Chaoyang */
 
 static lv_obj_t *root = NULL;
-static lv_timer_t *poll_timer = NULL;
-static int state = 0;  /* 0=fetching, 1=done, -1=error */
-static char wx_txt[64], wx_tmp[32], wx_hum[32], wx_wind[32];
+static int state = 0;  /* 0=fetching, 1=ok, -1=error */
+static char wx_today[64], wx_temp[32], wx_wind[32];
 static char fc[3][64];
 
-static esp_err_t http_get(const char *path, char *buf, int max)
+typedef struct {
+    char *buf;
+    int   len;
+    int   max;
+    int   status;
+} http_ctx_t;
+
+static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
-    char url[512];
-    snprintf(url, sizeof(url), "https://%s%s&key=%s",
-             QWEATHER_API_HOST, path, QWEATHER_API_KEY);
+    http_ctx_t *ctx = (http_ctx_t *)evt->user_data;
+    switch (evt->event_id) {
+    case HTTP_EVENT_ON_DATA:
+        if (ctx->len + evt->data_len < ctx->max) {
+            memcpy(ctx->buf + ctx->len, evt->data, evt->data_len);
+            ctx->len += evt->data_len;
+            ctx->buf[ctx->len] = 0;
+        }
+        break;
+    case HTTP_EVENT_ON_FINISH:
+        ctx->status = esp_http_client_get_status_code(evt->client);
+        break;
+    default:
+        break;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t http_get(const char *url, char *buf, int max)
+{
+    http_ctx_t ctx = { .buf = buf, .len = 0, .max = max, .status = 0 };
 
     esp_http_client_config_t cfg = {
         .url = url,
-        .timeout_ms = 20000,
+        .timeout_ms = 15000,
         .transport_type = HTTP_TRANSPORT_OVER_SSL,
         .crt_bundle_attach = esp_crt_bundle_attach,
+        .event_handler = http_event_handler,
+        .user_data = &ctx,
     };
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
+
     esp_err_t err = esp_http_client_perform(cli);
-    int status = err == ESP_OK ? esp_http_client_get_status_code(cli) : -1;
-    int content_len = esp_http_client_get_content_length(cli);
-    printf("WX: err=%d status=%d len=%d\n", err, status, content_len);
-    if (err == ESP_OK && status == 200) {
-        int len = esp_http_client_read(cli, buf, max - 1);
-        printf("WX: read=%d\n", len);
-        if (len > 0) { buf[len] = 0; } else { err = ESP_FAIL; }
-    } else {
-        err = ESP_FAIL;
-    }
     esp_http_client_cleanup(cli);
-    return err;
+
+    return (err == ESP_OK && ctx.status == 200 && ctx.len > 0) ? ESP_OK : ESP_FAIL;
 }
 
 static void do_fetch(void)
 {
     if (!sys_wifi_is_connected()) { state = -1; return; }
 
+    char url[384];
     char buf[4096];
 
-    esp_err_t ret = http_get("/v7/weather/now?location=" LOCATION_ID, buf, sizeof(buf));
-    printf("WX: now ret=%d\n", ret);
-    if (ret == ESP_OK) {
-        printf("WX: %.200s\n", buf);
-        cJSON *j = cJSON_Parse(buf);
-        if (j) {
-            cJSON *n = cJSON_GetObjectItem(j, "now");
-            if (n) {
-                cJSON *t = cJSON_GetObjectItem(n, "text");
-                cJSON *tp = cJSON_GetObjectItem(n, "temp");
-                cJSON *hm = cJSON_GetObjectItem(n, "humidity");
-                cJSON *wd = cJSON_GetObjectItem(n, "windDir");
-                cJSON *ws = cJSON_GetObjectItem(n, "windScale");
-                snprintf(wx_txt, sizeof(wx_txt), "%s", t ? t->valuestring : "--");
-                snprintf(wx_tmp, sizeof(wx_tmp), "%sC", tp ? tp->valuestring : "--");
-                snprintf(wx_hum, sizeof(wx_hum), "Hum: %s%%", hm ? hm->valuestring : "--");
-                snprintf(wx_wind, sizeof(wx_wind), "%s %s",
-                         wd ? wd->valuestring : "", ws ? ws->valuestring : "");
-            }
-            cJSON_Delete(j);
-        }
-    }
+    snprintf(url, sizeof(url),
+             "https://restapi.amap.com/v3/weather/weatherInfo?"
+             "city=%s&key=%s&extensions=all",
+             CITY_CODE, AMAP_API_KEY);
 
-    ret = http_get("/v7/weather/3d?location=" LOCATION_ID, buf, sizeof(buf));
-    printf("WX: 3d ret=%d\n", ret);
-    if (ret == ESP_OK) {
-        cJSON *j = cJSON_Parse(buf);
-        if (j) {
-            cJSON *daily = cJSON_GetObjectItem(j, "daily");
-            if (daily) {
-                int i = 0;
-                cJSON *day;
-                cJSON_ArrayForEach(day, daily) {
-                    if (i >= 3) break;
-                    cJSON *d = cJSON_GetObjectItem(day, "fxDate");
-                    cJSON *hi = cJSON_GetObjectItem(day, "tempMax");
-                    cJSON *lo = cJSON_GetObjectItem(day, "tempMin");
-                    cJSON *tx = cJSON_GetObjectItem(day, "textDay");
+    if (http_get(url, buf, sizeof(buf)) != ESP_OK) {
+        printf("WX: fetch failed\n");
+        state = -1;
+        return;
+    }
+    printf("WX: ok\n");
+
+    cJSON *j = cJSON_Parse(buf);
+    if (!j) { state = -1; return; }
+
+    cJSON *forecasts = cJSON_GetObjectItem(j, "forecasts");
+    if (forecasts) {
+        cJSON *fc_obj = cJSON_GetArrayItem(forecasts, 0);
+        if (fc_obj) {
+            cJSON *casts = cJSON_GetObjectItem(fc_obj, "casts");
+            if (casts && cJSON_GetArraySize(casts) >= 4) {
+                cJSON *today = cJSON_GetArrayItem(casts, 0);
+                cJSON *dw = cJSON_GetObjectItem(today, "dayweather");
+                cJSON *dt = cJSON_GetObjectItem(today, "daytemp");
+                cJSON *dwd = cJSON_GetObjectItem(today, "daywind");
+                cJSON *dwp = cJSON_GetObjectItem(today, "daypower");
+                snprintf(wx_today, sizeof(wx_today), "%s",
+                         dw ? dw->valuestring : "--");
+                snprintf(wx_temp, sizeof(wx_temp), "%sC",
+                         dt ? dt->valuestring : "--");
+                snprintf(wx_wind, sizeof(wx_wind), "%s %s级",
+                         dwd ? dwd->valuestring : "",
+                         dwp ? dwp->valuestring : "");
+
+                for (int i = 0; i < 3; i++) {
+                    cJSON *day = cJSON_GetArrayItem(casts, i + 1);
+                    cJSON *d = cJSON_GetObjectItem(day, "date");
+                    cJSON *w = cJSON_GetObjectItem(day, "dayweather");
+                    cJSON *hi = cJSON_GetObjectItem(day, "daytemp");
+                    cJSON *lo = cJSON_GetObjectItem(day, "nighttemp");
                     const char *ds = d ? d->valuestring : "?";
-                    const char *p = strchr(ds, '-');
-                    p = p ? strchr(p + 1, '-') : ds;
-                    if (p) p++; else p = ds;
+                    const char *p = ds + 5; /* skip "2026-" to get MM-DD */
                     snprintf(fc[i], sizeof(fc[i]), "%s %s %s/%sC",
-                             p, tx ? tx->valuestring : "--",
+                             p,
+                             w ? w->valuestring : "--",
                              hi ? hi->valuestring : "--",
                              lo ? lo->valuestring : "--");
-                    i++;
                 }
             }
-            cJSON_Delete(j);
         }
     }
+    cJSON_Delete(j);
     state = 1;
 }
 
@@ -113,7 +132,7 @@ static void update_cb(lv_timer_t *t)
     lv_timer_del(t);
     lv_obj_clean(root);
 
-    if (state < 0 || wx_tmp[0] == 0) {
+    if (state < 0) {
         lv_obj_t *l = lv_label_create(root);
         lv_label_set_text(l, "No WiFi\nor API error");
         lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
@@ -132,7 +151,7 @@ static void update_cb(lv_timer_t *t)
     lv_obj_align(l, LV_ALIGN_TOP_MID, 0, 10);
 
     l = lv_label_create(root);
-    lv_label_set_text(l, wx_tmp);
+    lv_label_set_text(l, wx_temp);
     lv_obj_set_style_text_font(l, &lv_font_montserrat_48, 0);
     lv_obj_set_style_text_color(l, lv_color_hex(0xffffff), 0);
     lv_obj_set_style_shadow_color(l, lv_color_hex(0x4488cc), 0);
@@ -140,22 +159,22 @@ static void update_cb(lv_timer_t *t)
     lv_obj_align(l, LV_ALIGN_TOP_MID, 0, 40);
 
     l = lv_label_create(root);
-    lv_label_set_text(l, wx_txt);
+    lv_label_set_text(l, wx_today);
     lv_obj_set_style_text_font(l, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(l, lv_color_hex(0xaaaaaa), 0);
     lv_obj_align(l, LV_ALIGN_TOP_MID, 0, 100);
 
     l = lv_label_create(root);
-    lv_label_set_text_fmt(l, "%s    %s", wx_hum, wx_wind);
+    lv_label_set_text(l, wx_wind);
     lv_obj_set_style_text_font(l, &lv_font_montserrat_16, 0);
     lv_obj_set_style_text_color(l, lv_color_hex(0x888899), 0);
     lv_obj_align(l, LV_ALIGN_TOP_MID, 0, 130);
 
-    lv_obj_t *d = lv_obj_create(root);
-    lv_obj_set_size(d, 300, 1);
-    lv_obj_align(d, LV_ALIGN_TOP_MID, 0, 160);
-    lv_obj_set_style_bg_color(d, lv_color_hex(0x333355), 0);
-    lv_obj_set_style_border_width(d, 0, 0);
+    lv_obj_t *div = lv_obj_create(root);
+    lv_obj_set_size(div, 300, 1);
+    lv_obj_align(div, LV_ALIGN_TOP_MID, 0, 160);
+    lv_obj_set_style_bg_color(div, lv_color_hex(0x333355), 0);
+    lv_obj_set_style_border_width(div, 0, 0);
 
     l = lv_label_create(root);
     lv_label_set_text(l, "Forecast");
@@ -174,14 +193,11 @@ static void update_cb(lv_timer_t *t)
 
 static void fetch_task(void *arg)
 {
-    printf("WX: fetch start, wifi=%d\n", sys_wifi_is_connected());
     int w = 0;
     while (!sys_wifi_is_connected() && w < 50) {
         vTaskDelay(pdMS_TO_TICKS(200)); w++;
     }
-    printf("WX: wifi ready=%d after %d\n", sys_wifi_is_connected(), w);
     do_fetch();
-    printf("WX: fetch done, state=%d\n", state);
     vTaskDelete(NULL);
 }
 
@@ -189,8 +205,8 @@ static void create(lv_obj_t *parent)
 {
     state = 0;
     memset(fc, 0, sizeof(fc));
-    memset(wx_txt, 0, sizeof(wx_txt));
-    memset(wx_tmp, 0, sizeof(wx_tmp));
+    memset(wx_today, 0, sizeof(wx_today));
+    memset(wx_temp, 0, sizeof(wx_temp));
 
     root = lv_obj_create(parent);
     lv_obj_set_size(root, 340, 380);
@@ -205,14 +221,10 @@ static void create(lv_obj_t *parent)
     lv_obj_center(l);
 
     xTaskCreate(fetch_task, "wx", 16384, NULL, 3, NULL);
-    poll_timer = lv_timer_create(update_cb, 300, NULL);
+    lv_timer_create(update_cb, 300, NULL);
 }
 
-static void destroy(void)
-{
-    if (root) { lv_obj_del(root); root = NULL; }
-}
-
+static void destroy(void) { if (root) { lv_obj_del(root); root = NULL; } }
 static void resume(void) {}
 
 const app_entry_t app_weather = {
