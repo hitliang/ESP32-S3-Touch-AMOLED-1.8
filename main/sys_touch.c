@@ -14,7 +14,6 @@ static const char *TAG = "sys_touch";
 static esp_lcd_touch_handle_t tp = NULL;
 static lv_indev_t *touch_indev = NULL;
 
-/* Exposed for input detection in sys_display */
 int g_debug_touch_x = -1, g_debug_touch_y = -1;
 bool g_debug_touch_pressed = false;
 
@@ -23,13 +22,13 @@ static void lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
     uint16_t tp_x, tp_y;
     uint8_t tp_cnt = 0;
     esp_lcd_touch_read_data(tp);
-    bool pressed = esp_lcd_touch_get_coordinates(tp, &tp_x, &tp_y, NULL, &tp_cnt, 1);
+    bool tp_pressed = esp_lcd_touch_get_coordinates(tp, &tp_x, &tp_y, NULL, &tp_cnt, 1);
 
-    g_debug_touch_x = pressed ? tp_x : -1;
-    g_debug_touch_y = pressed ? tp_y : -1;
-    g_debug_touch_pressed = pressed;
+    g_debug_touch_x = tp_pressed ? tp_x : -1;
+    g_debug_touch_y = tp_pressed ? tp_y : -1;
+    g_debug_touch_pressed = tp_pressed;
 
-    if (pressed && tp_cnt > 0) {
+    if (tp_pressed && tp_cnt > 0) {
         data->point.x = tp_x;
         data->point.y = tp_y;
         data->state = LV_INDEV_STATE_PRESSED;

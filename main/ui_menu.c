@@ -88,6 +88,7 @@ lv_obj_t *ui_menu_create(lv_obj_t *scr)
         lv_obj_set_style_bg_opa(icon_obj, LV_OPA_COVER, 0);
         lv_obj_set_style_radius(icon_obj, ICON_SIZE / 2, 0);
         lv_obj_set_style_border_width(icon_obj, 0, 0);
+        lv_obj_clear_flag(icon_obj, LV_OBJ_FLAG_CLICKABLE);  /* don't eat clicks */
 
         lv_obj_t *sym = lv_label_create(icon_obj);
         lv_label_set_text(sym, icon->symbol);

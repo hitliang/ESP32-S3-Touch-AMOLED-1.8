@@ -146,11 +146,9 @@ static void lvgl_port_task(void *arg)
 {
     uint32_t task_delay_ms = 500;
 
-    /* Input detection state */
     int sw_start_x = -1, sw_start_y = -1;
     int last_tx = -1, last_ty = -1;
     bool swipe_fired = false;
-    int tap_stable = 0;       /* consecutive frames with stable position */
 
     while (1) {
         if (sys_display_lock(-1)) {
@@ -166,7 +164,6 @@ static void lvgl_port_task(void *arg)
                     sw_start_x = tx;
                     sw_start_y = ty;
                     swipe_fired = false;
-                    tap_stable = 0;
                 }
 
                 /* Swipe detection */
@@ -179,19 +176,6 @@ static void lvgl_port_task(void *arg)
                         if (gesture_cb) gesture_cb(LV_DIR_BOTTOM);
                         swipe_fired = true;
                     }
-                }
-
-                /* Tap detection: stable for ~20ms, no swipe = click */
-                if (!swipe_fired && abs(tx - last_tx) < 5 && abs(ty - last_ty) < 5) {
-                    tap_stable++;
-                    if (tap_stable == 5) {
-                        lv_obj_t *obj = lv_indev_get_obj_act();
-                        if (obj) {
-                            lv_event_send(obj, LV_EVENT_CLICKED, NULL);
-                        }
-                    }
-                } else if (abs(tx - last_tx) >= 5 || abs(ty - last_ty) >= 5) {
-                    tap_stable = 0;
                 }
 
                 last_tx = tx; last_ty = ty;
