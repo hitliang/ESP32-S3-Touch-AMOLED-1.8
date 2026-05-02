@@ -6,9 +6,11 @@
 #include "lvgl.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "esp_tls.h"
 #include "cJSON.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "tts_test_wav.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +18,8 @@
 #define HISTORY_FILE    "voice_history.txt"
 #define MAX_HISTORY     200
 #define BODY_MAX        32768
+
+static const char *TAG = "voice";
 
 /* ---- System Prompt ---- */
 static const char *SYSTEM_PROMPT =
@@ -60,21 +64,27 @@ static esp_err_t hevt(esp_http_client_event_t *e)
 static esp_err_t http_post(const char *url, const char *body,
                             const char *h1, const char *v1,
                             const char *h2, const char *v2,
-                            uint8_t *buf, int max, int *olen, int *osta)
+                            uint8_t *buf, int max, int *olen, int *osta,
+                            int timeout_ms)
 {
     hctx_t ctx = { .buf = buf, .len = 0, .max = max, .status = 0 };
     esp_http_client_config_t cfg = {
-        .url = url, .timeout_ms = 25000,
+        .url = url, .timeout_ms = timeout_ms,
         .transport_type = HTTP_TRANSPORT_OVER_SSL,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .event_handler = hevt, .user_data = &ctx,
+        .buffer_size = 8192, .buffer_size_tx = 4096,
+        .keep_alive_enable = false,
     };
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
     esp_http_client_set_method(cli, HTTP_METHOD_POST);
     esp_http_client_set_header(cli, "Content-Type", "application/json");
+    esp_http_client_set_header(cli, "Accept", "application/json");
+    esp_http_client_set_header(cli, "User-Agent", "ESP32-S3");
     if (h1) esp_http_client_set_header(cli, h1, v1);
     if (h2) esp_http_client_set_header(cli, h2, v2);
     esp_http_client_set_post_field(cli, body, strlen(body));
+    ESP_LOGI(TAG, "HTTP POST %s body_len=%d", url, (int)strlen(body));
     esp_err_t err = esp_http_client_perform(cli);
     esp_http_client_cleanup(cli);
     *olen = ctx.len; *osta = ctx.status;
@@ -136,35 +146,36 @@ static void history_add(const char *u, const char *a)
 /* ---- LLM ---- */
 static char *llm_chat(const char *question)
 {
-    if (!question) { printf("LLM: null q\n"); return NULL; }
+    if (!question) { ESP_LOGI(TAG, "LLM: null q"); return NULL; }
     char *body = malloc(BODY_MAX);
-    if (!body) { printf("LLM: no mem\n"); return NULL; }
+    if (!body) { ESP_LOGI(TAG, "LLM: no mem"); return NULL; }
 
-    char e1[2048], e2[2048];
+    char *e1 = malloc(2048), *e2 = malloc(2048);
+    if (!e1 || !e2) { free(e1); free(e2); free(body); return NULL; }
     int off = snprintf(body, BODY_MAX,
-        "{\"model\":\"deepseek-chat\",\"messages\":["
+        "{\"model\":\"deepseek-v4-flash\",\"messages\":["
         "{\"role\":\"system\",\"content\":\"%s\"}",
-        json_esc(SYSTEM_PROMPT, e1, sizeof(e1)));
+        json_esc(SYSTEM_PROMPT, e1, 2048));
 
     for (int i=0; i<history_count && off<BODY_MAX-4096; i++) {
         if (history_user[i])
             off += snprintf(body+off, BODY_MAX-off,
-                ",{\"role\":\"user\",\"content\":\"%s\"}", json_esc(history_user[i], e1, sizeof(e1)));
+                ",{\"role\":\"user\",\"content\":\"%s\"}", json_esc(history_user[i], e1, 2048));
         if (history_asst[i] && strcmp(history_asst[i],"OK"))
             off += snprintf(body+off, BODY_MAX-off,
-                ",{\"role\":\"assistant\",\"content\":\"%s\"}", json_esc(history_asst[i], e2, sizeof(e2)));
+                ",{\"role\":\"assistant\",\"content\":\"%s\"}", json_esc(history_asst[i], e2, 2048));
     }
     off += snprintf(body+off, BODY_MAX-off,
-        ",{\"role\":\"user\",\"content\":\"%s\"}]}", json_esc(question, e1, sizeof(e1)));
+        ",{\"role\":\"user\",\"content\":\"%s\"}]}", json_esc(question, e1, 2048));
 
     uint8_t *buf = malloc(16384);
-    if (!buf) { free(body); printf("LLM: no buf\n"); return NULL; }
+    if (!buf) { free(body); free(e1); free(e2); ESP_LOGI(TAG, "LLM: no buf"); return NULL; }
     int len, status;
     http_post("https://api.deepseek.com/v1/chat/completions",
               body, "Authorization", "Bearer " DEEPSEEK_API_KEY, NULL, NULL,
-              buf, 16384, &len, &status);
+              buf, 16384, &len, &status, 25000);
     free(body);
-    printf("LLM: s=%d l=%d body=%.100s\n", status, len, (char*)buf);
+    ESP_LOGI(TAG, "LLM: s=%d l=%d", status, len);
 
     char *reply = NULL;
     if (status == 200 && len > 0) {
@@ -179,6 +190,7 @@ static char *llm_chat(const char *question)
         }
     }
     free(buf);
+    free(e1); free(e2);
     return reply;
 }
 
@@ -195,20 +207,33 @@ static int b64_decode(const char *in, uint8_t *out, int max)
 
 static bool tts_play(const char *text)
 {
-    char e[2048]; json_esc(text, e, sizeof(e));
-    char body[4096];
-    snprintf(body, sizeof(body),
-        "{\"model\":\"mimo-v2.5-tts\","
-        "\"messages\":[{\"role\":\"assistant\",\"content\":\"%s\"}],"
-        "\"audio\":{\"format\":\"wav\",\"voice\":\"Chloe\"}}", e);
+    ESP_LOGI(TAG, "T0 TTS start heap=%lu", (unsigned long)esp_get_free_heap_size());
+    char *e = malloc(2048), *body = malloc(4096);
+    if (!e || !body) { ESP_LOGI(TAG, "T1 TTS no mem for e/body"); free(e); free(body); return false; }
+    json_esc(text, e, 2048);
+    snprintf(body, 4096,
+        "{\"model\":\"mimo-v2-tts\","
+        "\"messages\":["
+        "{\"role\":\"user\",\"content\":\"please speak\"},"
+        "{\"role\":\"assistant\",\"content\":\"%s\"}"
+        "],\"audio\":{\"format\":\"wav\",\"voice\":\"mimo_default\"}}", e);
+    free(e); e = NULL;
+    ESP_LOGI(TAG, "TTS body: %s", body);
 
-    uint8_t *buf = malloc(32768);
-    if (!buf) return false;
+    uint8_t *buf = malloc(262144);
+    if (!buf) { ESP_LOGI(TAG, "T1 TTS no mem for resp buf, heap=%lu", (unsigned long)esp_get_free_heap_size()); free(body); return false; }
+    ESP_LOGI(TAG, "T1.5 alloc ok heap=%lu", (unsigned long)esp_get_free_heap_size());
     int len, status;
-    http_post("https://api.xiaomimimo.com/v1/chat/completions",
-              body, "api-key", MIMO_API_KEY, NULL, NULL, buf, 32768, &len, &status);
+    esp_err_t err = http_post("https://api.xiaomimimo.com/v1/chat/completions",
+              body, "Authorization", "Bearer " MIMO_API_KEY, NULL, NULL,
+              buf, 262144, &len, &status, 120000);
+    free(body); body = NULL;
+    ESP_LOGI(TAG, "T2 TTS HTTP err=%d s=%d l=%d heap=%lu", err, status, len, (unsigned long)esp_get_free_heap_size());
     bool ok = false;
-    if (status == 200 && len > 0) {
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "T2 HTTP request failed: %s", esp_err_to_name(err));
+    } else if (status == 200 && len > 0) {
+        ESP_LOGI(TAG, "TTS raw: %.200s", (char*)buf);
         cJSON *r = cJSON_Parse((char*)buf);
         if (r) {
             cJSON *j = cJSON_GetObjectItem(r, "choices");
@@ -217,16 +242,26 @@ static bool tts_play(const char *text)
             if (j) j = cJSON_GetObjectItem(j, "audio");
             if (j) j = cJSON_GetObjectItem(j, "data");
             if (j && j->valuestring) {
-                int bl = strlen(j->valuestring);
-                uint8_t *wav = malloc(bl);
-                if (wav) {
-                    int wlen = b64_decode(j->valuestring, wav, bl);
-                    if (wlen > 44) { sys_audio_play_wav(wav, wlen); ok = true; }
-                    free(wav);
+                char *b64 = strdup(j->valuestring);
+                int bl = b64 ? strlen(b64) : 0;
+                ESP_LOGI(TAG, "T2.5 b64 len=%d heap=%lu", bl, (unsigned long)esp_get_free_heap_size());
+                cJSON_Delete(r); r = NULL;
+                free(buf); buf = NULL;
+                if (b64 && bl > 0) {
+                    uint8_t *wav = malloc(bl);
+                    if (wav) {
+                        int wlen = b64_decode(b64, wav, bl);
+                        ESP_LOGI(TAG, "T3 wav len=%d heap=%lu", wlen, (unsigned long)esp_get_free_heap_size());
+                        if (wlen > 44) { sys_audio_play_wav(wav, wlen); ok = true; }
+                        else ESP_LOGW(TAG, "T3 wav too short: %d", wlen);
+                        free(wav);
+                    } else ESP_LOGE(TAG, "T3 no mem for wav, need %d, heap=%lu", bl, (unsigned long)esp_get_free_heap_size());
                 }
-            }
-            cJSON_Delete(r);
-        }
+                free(b64);
+            } else { ESP_LOGW(TAG, "T4 no audio data in JSON"); cJSON_Delete(r); }
+        } else { ESP_LOGE(TAG, "T5 cJSON parse fail"); }
+    } else if (status != 200) {
+        ESP_LOGE(TAG, "T2 HTTP status=%d body=%.200s", status, (char*)buf);
     }
     free(buf);
     return ok;
@@ -237,6 +272,13 @@ static lv_obj_t *root, *conv_area, *status_lbl;
 static int conv_y = 5;
 static volatile int ask_state = 0;
 static char *ask_result_text = NULL;
+static TaskHandle_t voice_task_handle = NULL;
+
+/* Static task allocation — avoids heap fragmentation issues after vTaskDelete */
+#define VOICE_STACK_WORDS 4096  /* 4096 words = 16KB */
+static StackType_t voice_task_stack[VOICE_STACK_WORDS];
+static StaticTask_t voice_task_tcb;
+
 extern const lv_font_t lv_font_simsun_16_cjk;
 
 static void add_msg(const char *pfx, const char *txt, uint32_t color)
@@ -255,18 +297,35 @@ static void add_msg(const char *pfx, const char *txt, uint32_t color)
 static void ask_bg_task(void *arg)
 {
     char *q = (char*)arg;
-    printf("VOICE: ask wifi=%d heap=%lu\n", sys_wifi_is_connected(), esp_get_free_heap_size());
+    ESP_LOGI(TAG, "V1 task start, wifi=%d heap=%lu", sys_wifi_is_connected(), esp_get_free_heap_size());
     char *reply = llm_chat(q);
     if (reply) {
-        history_add(q, reply); ask_result_text=reply; ask_state=2;
+        ESP_LOGI(TAG, "V2 LLM ok len=%d", (int)strlen(reply));
+        history_add(q, reply);
+        ask_result_text = reply;
+        ask_state = 2;
+        ESP_LOGI(TAG, "V3 TTS start");
+        char *tts_text = strdup(reply);
+        if (tts_text) {
+            sys_audio_init();
+            ESP_LOGI(TAG, "V4 audio init done");
+            tts_play(tts_text);
+            ESP_LOGI(TAG, "V5 TTS done");
+            free(tts_text);
+        }
+    } else {
+        ESP_LOGI(TAG, "VF LLM fail");
+        ask_state = -1;
     }
-    else { ask_state=-1; printf("VOICE: fail\n"); }
     free(q);
+    ESP_LOGI(TAG, "VE task end");
+    voice_task_handle = NULL;
     vTaskDelete(NULL);
 }
 
 static void ask_result_cb(lv_timer_t *t)
 {
+    ESP_LOGI(TAG, "timer state=%d", ask_state);
     if (ask_state==0 || ask_state==1) return;
     lv_timer_del(t);
     if (ask_state==2 && ask_result_text) {
@@ -280,22 +339,109 @@ static void ask_result_cb(lv_timer_t *t)
 
 static void ask(const char *q)
 {
-    if (ask_state) return;
+    ESP_LOGI(TAG, "ask() called, state=%d", ask_state);
+    if (ask_state) { ESP_LOGI(TAG, "busy, skip"); return; }
+
+    /* Don't kill old task — if TTS/HTTP in progress, socket will leak.
+       Instead, just skip if previous task still running. */
+    if (voice_task_handle) {
+        ESP_LOGI(TAG, "prev task still running, skip");
+        return;
+    }
+
     add_msg("You: ", q, 0x4488cc);
     lv_label_set_text(status_lbl, "Thinking...");
     lv_obj_set_style_text_color(status_lbl, lv_color_hex(0xccaa44), 0);
     ask_state=1;
-    char *s = strdup(q); if (!s) { ask_state=-1; return; }
-    xTaskCreate(ask_bg_task, "voice_bg", 16384, s, 3, NULL);
+    char *s = strdup(q); if (!s) { ask_state=-1; ESP_LOGI(TAG, "strdup fail"); return; }
+    /* Use static allocation — always succeeds, no heap fragmentation issues */
+    voice_task_handle = xTaskCreateStatic(ask_bg_task, "voice_bg",
+        VOICE_STACK_WORDS, s, 3, voice_task_stack, &voice_task_tcb);
+    if (!voice_task_handle) {
+        free(s);
+        ask_state = -1;
+        ESP_LOGI(TAG, "task create fail");
+    }
     lv_timer_create(ask_result_cb, 300, NULL);
 }
 
-static void on_q1(lv_event_t *e) { ask("Hi, who are you?"); }
-static void on_q2(lv_event_t *e) { ask("Tell me a short story"); }
-static void on_q3(lv_event_t *e) { ask("What is 1 plus 1?"); }
+static void on_q1(lv_event_t *e) { ESP_LOGI(TAG, "BTN1 clicked"); ask("Hi, who are you?"); }
+static void on_q2(lv_event_t *e) { ESP_LOGI(TAG, "BTN2 clicked"); ask("Tell me a short story"); }
+static void tts_raw_tls_task(void *arg)
+{
+    const char *body = "{\"model\":\"mimo-v2-tts\",\"messages\":["
+        "{\"role\":\"user\",\"content\":\"hi\"},"
+        "{\"role\":\"assistant\",\"content\":\"hello\"}"
+        "],\"audio\":{\"format\":\"wav\",\"voice\":\"mimo_default\"}}";
+    int body_len = strlen(body);
+
+    for (int attempt = 0; attempt < 3; attempt++) {
+        ESP_LOGI(TAG, "RAW attempt %d heap=%lu", attempt, (unsigned long)esp_get_free_heap_size());
+        esp_tls_t *tls = esp_tls_init();
+        if (!tls) { ESP_LOGE(TAG, "RAW: esp_tls_init fail"); break; }
+
+        esp_tls_cfg_t cfg = {
+            .crt_bundle_attach = esp_crt_bundle_attach,
+            .timeout_ms = 30000,
+        };
+        int ret = esp_tls_conn_new_sync("api.xiaomimimo.com", strlen("api.xiaomimimo.com"), 443, &cfg, tls);
+        if (ret < 0) { ESP_LOGE(TAG, "RAW: conn fail ret=%d", ret); esp_tls_conn_destroy(tls); vTaskDelay(pdMS_TO_TICKS(2000)); continue; }
+
+        char *hdr = malloc(512);
+        if (!hdr) { esp_tls_conn_destroy(tls); break; }
+        int hdr_len = snprintf(hdr, 512,
+            "POST /v1/chat/completions HTTP/1.1\r\n"
+            "Host: api.xiaomimimo.com\r\n"
+            "Content-Type: application/json\r\n"
+            "Authorization: Bearer " MIMO_API_KEY "\r\n"
+            "Content-Length: %d\r\n"
+            "Connection: close\r\n"
+            "\r\n", body_len);
+        esp_tls_conn_write(tls, hdr, hdr_len);
+        esp_tls_conn_write(tls, body, body_len);
+        free(hdr);
+
+        int rbuf_sz = 131072;
+        char *rbuf = malloc(rbuf_sz);
+        if (!rbuf) { esp_tls_conn_destroy(tls); break; }
+        int total = 0;
+        while (total < rbuf_sz - 1) {
+            int r = esp_tls_conn_read(tls, rbuf + total, rbuf_sz - 1 - total);
+            if (r <= 0) break;
+            total += r;
+            rbuf[total] = 0;
+        }
+        esp_tls_conn_destroy(tls);
+
+        ESP_LOGI(TAG, "RAW: attempt %d done, got %d bytes", attempt, total);
+        if (total > 100 && strstr(rbuf, "200 OK")) {
+            ESP_LOGI(TAG, "RAW: SUCCESS on attempt %d", attempt);
+            /* Find JSON body start */
+            char *json_start = strstr(rbuf, "\r\n\r\n");
+            if (json_start) {
+                json_start += 4;
+                ESP_LOGI(TAG, "RAW JSON: %.500s", json_start);
+            }
+            free(rbuf);
+            break;
+        } else {
+            ESP_LOGW(TAG, "RAW: attempt %d failed, got %d bytes", attempt, total);
+            free(rbuf);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+        }
+    }
+    ESP_LOGI(TAG, "RAW TLS test done heap=%lu", (unsigned long)esp_get_free_heap_size());
+    vTaskDelete(NULL);
+}
+
+static void on_q3(lv_event_t *e) {
+    ESP_LOGI(TAG, "BTN3 clicked - raw TLS test");
+    xTaskCreate(tts_raw_tls_task, "tls_test", 8192, NULL, 5, NULL);
+}
 
 static void create(lv_obj_t *parent)
 {
+    ESP_LOGI(TAG, "Voice AI app created");
     conv_y=5; history_load_from_sd();
     root = lv_obj_create(parent);
     lv_obj_set_size(root, 340, 380);
@@ -336,6 +482,10 @@ static void create(lv_obj_t *parent)
 
 static void destroy(void)
 {
+    /* Let background task finish naturally; don't vTaskDelete
+       or HTTP sockets will leak and exhaust the pool. */
+    ask_state = 0;
+    ask_result_text = NULL;
     if (root) { lv_obj_del(root); root=NULL; }
     for (int i=0;i<history_count;i++){free(history_user[i]);free(history_asst[i]);}
     history_count=0;

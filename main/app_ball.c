@@ -106,7 +106,7 @@ static void create(lv_obj_t *parent)
 {
     root = lv_obj_create(parent);
     lv_obj_set_size(root, W, H);
-    lv_obj_set_style_bg_color(root, lv_color_hex(0x0a0a18), 0);
+    lv_obj_set_style_bg_color(root, lv_color_hex(0x000000), 0);
     lv_obj_set_style_border_width(root, 0, 0);
     lv_obj_set_style_pad_all(root, 0, 0);
     lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
