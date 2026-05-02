@@ -14,16 +14,9 @@ static const char *TAG = "sys_touch";
 static esp_lcd_touch_handle_t tp = NULL;
 static lv_indev_t *touch_indev = NULL;
 
-/* Exposed for swipe detection in sys_display */
+/* Exposed for input detection in sys_display */
 int g_debug_touch_x = -1, g_debug_touch_y = -1;
 bool g_debug_touch_pressed = false;
-
-/* Simulated release: FT5x06 never reports release, so after holding
-   same position for N frames, fake a release to let LVGL process clicks */
-#define FAKE_RELEASE_FRAMES  8    /* ~32ms at 4ms indev period */
-static int  same_pos_count = 0;
-static int  last_tp_x = -1, last_tp_y = -1;
-static bool fake_released = false;
 
 static void lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
 {
@@ -36,38 +29,12 @@ static void lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
     g_debug_touch_y = pressed ? tp_y : -1;
     g_debug_touch_pressed = pressed;
 
-    if (!pressed || tp_cnt == 0) {
-        /* Genuine release */
-        data->state = LV_INDEV_STATE_RELEASED;
-        same_pos_count = 0;
-        fake_released = false;
-        return;
-    }
-
-    /* FT5x06 is always "pressed" — simulate release when position stabilizes */
-    if (tp_x == last_tp_x && tp_y == last_tp_y) {
-        same_pos_count++;
-    } else {
-        same_pos_count = 0;
-        fake_released = false;
-    }
-    last_tp_x = tp_x;
-    last_tp_y = tp_y;
-
-    data->point.x = tp_x;
-    data->point.y = tp_y;
-
-    if (same_pos_count >= FAKE_RELEASE_FRAMES && !fake_released) {
-        /* Fake one release frame to let LVGL process click */
-        data->state = LV_INDEV_STATE_RELEASED;
-        fake_released = true;
-        same_pos_count = 0;  /* reset, will go back to pressed next frame */
-    } else {
+    if (pressed && tp_cnt > 0) {
+        data->point.x = tp_x;
+        data->point.y = tp_y;
         data->state = LV_INDEV_STATE_PRESSED;
-        if (fake_released) {
-            /* Next frame after fake release — this is a "new" press */
-            fake_released = false;
-        }
+    } else {
+        data->state = LV_INDEV_STATE_RELEASED;
     }
 }
 
@@ -98,14 +65,10 @@ void sys_touch_init(lv_disp_t *disp)
     ESP_LOGI(TAG, "Touch ready");
 }
 
-esp_lcd_touch_handle_t sys_touch_get_handle(void)
-{
-    return tp;
-}
+esp_lcd_touch_handle_t sys_touch_get_handle(void)     { return tp; }
+lv_indev_t *sys_touch_get_indev(void)                  { return touch_indev; }
 
 void sys_touch_set_enabled(bool enabled)
 {
-    if (touch_indev) {
-        lv_indev_enable(touch_indev, enabled);
-    }
+    if (touch_indev) lv_indev_enable(touch_indev, enabled);
 }

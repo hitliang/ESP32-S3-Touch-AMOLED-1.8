@@ -146,11 +146,13 @@ static void lvgl_port_task(void *arg)
 {
     uint32_t task_delay_ms = 500;
 
-    /* Swipe detection: track touch position delta */
-    int swipe_start_x = -1, swipe_start_y = -1;
+    /* Input detection state */
+    int sw_start_x = -1, sw_start_y = -1;
     int last_tx = -1, last_ty = -1;
     bool swipe_fired = false;
     int stable_count = 0;
+    int tap_frame = 0;        /* frames since touch started */
+    int tap_x = 0, tap_y = 0; /* where tap was detected */
 
     while (1) {
         if (sys_display_lock(-1)) {
@@ -161,31 +163,18 @@ static void lvgl_port_task(void *arg)
             bool pressed = g_debug_touch_pressed;
 
             if (pressed && tx >= 0) {
-                /* Detect new touch: big position jump or just starting */
+                /* New touch? */
                 if (last_tx < 0 || abs(tx - last_tx) > 100 || abs(ty - last_ty) > 100) {
-                    swipe_start_x = tx;
-                    swipe_start_y = ty;
+                    sw_start_x = tx;
+                    sw_start_y = ty;
                     swipe_fired = false;
                     stable_count = 0;
-                }
-
-                /* Stable counter (for auto-reset) */
-                if (abs(tx - last_tx) < 3 && abs(ty - last_ty) < 3) {
-                    stable_count++;
-                    if (stable_count > 30) {
-                        /* Reset after ~120ms of stability */
-                        swipe_start_x = tx;
-                        swipe_start_y = ty;
-                        swipe_fired = false;
-                        stable_count = 0;
-                    }
-                } else {
-                    stable_count = 0;
+                    tap_frame = 0;
                 }
 
                 /* Swipe detection */
-                if (!swipe_fired && swipe_start_x >= 0) {
-                    int dy = ty - swipe_start_y;
+                if (!swipe_fired && sw_start_x >= 0) {
+                    int dy = ty - sw_start_y;
                     if (dy < -40) {
                         if (gesture_cb) gesture_cb(LV_DIR_TOP);
                         swipe_fired = true;
@@ -195,7 +184,35 @@ static void lvgl_port_task(void *arg)
                     }
                 }
 
+                /* Tap detection: stable short touch, no swipe */
+                if (abs(tx - last_tx) < 5 && abs(ty - last_ty) < 5) {
+                    stable_count++;
+                } else {
+                    stable_count = 0;
+                }
+                if (!swipe_fired && sw_start_x >= 0) {
+                    tap_frame++;
+                    tap_x = tx; tap_y = ty;
+                    /* Stable for ~20ms + held < ~200ms = tap */
+                    if (stable_count >= 5 && tap_frame < 50 && tap_frame > 2) {
+                        /* Force LVGL to process press→release → generates click */
+                        lv_indev_t *indev = sys_touch_get_indev();
+                        if (indev) lv_indev_reset(indev, NULL);
+                        /* Reset to avoid repeat triggers */
+                        sw_start_x = -1; sw_start_y = -1;
+                        stable_count = 0;
+                        tap_frame = 0;
+                    }
+                }
+
                 last_tx = tx; last_ty = ty;
+            } else {
+                /* No touch: reset everything */
+                sw_start_x = -1; sw_start_y = -1;
+                last_tx = -1; last_ty = -1;
+                swipe_fired = false;
+                stable_count = 0;
+                tap_frame = 0;
             }
 
             sys_display_unlock();
