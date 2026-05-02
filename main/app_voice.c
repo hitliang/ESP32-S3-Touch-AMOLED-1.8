@@ -274,18 +274,14 @@ static char *llm_chat(const char *question)
 /* ---- MiMo TTS (same as before) ---- */
 static bool tts_speak(const char *text)
 {
-    char e[1024], *d = e;
-    for (const char *s = text; *s && d < e + sizeof(e) - 2; s++) {
-        if (*s == '"' || *s == '\\') *d++ = '\\';
-        *d++ = *s;
-    }
-    *d = 0;
+    char e1[2048];
+    json_esc(text, e1, sizeof(e1));
 
-    char body[2048];
+    char body[4096];
     snprintf(body, sizeof(body),
         "{\"model\":\"mimo-v2.5-tts\","
         "\"messages\":[{\"role\":\"assistant\",\"content\":\"%s\"}],"
-        "\"audio\":{\"format\":\"wav\",\"voice\":\"Chloe\"}}", e);
+        "\"audio\":{\"format\":\"wav\",\"voice\":\"Chloe\"}}", e1);
 
     uint8_t *buf = malloc(32768);
     if (!buf) return false;
@@ -343,6 +339,17 @@ static void ask_bg_task(void *arg)
     char *reply = llm_chat(question);
     if (reply) {
         history_add(question, reply);
+
+        /* TTS: speak the reply */
+        printf("VOICE: TTS...\n");
+        if (tts_speak(reply)) {
+            printf("VOICE: TTS playing %d bytes\n", audio_len);
+            sys_audio_play_wav(audio_buf, audio_len);
+            free(audio_buf); audio_buf = NULL;
+        } else {
+            printf("VOICE: TTS failed\n");
+        }
+
         ask_result_text = reply;
         ask_state = 2;
     } else {
