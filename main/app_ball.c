@@ -47,12 +47,13 @@ static void update_cb(lv_timer_t *t)
         bx[i] += bvx[i] * dt;
         by[i] += bvy[i] * dt;
 
-        /* Wall collisions */
+        /* Wall collisions — ball is lv_obj at (bx-r, by-r) with size 2r */
         float r = br[i];
-        if (bx[i] < r)      { bx[i] = r;      bvx[i] = -bvx[i] * WALL_BOUNCE; }
-        if (bx[i] > W - r)  { bx[i] = W - r;  bvx[i] = -bvx[i] * WALL_BOUNCE; }
-        if (by[i] < r)      { by[i] = r;      bvy[i] = -bvy[i] * WALL_BOUNCE; }
-        if (by[i] > H - r)  { by[i] = H - r;  bvy[i] = -bvy[i] * WALL_BOUNCE; }
+        float margin = r + 2;  /* keep ball fully inside container */
+        if (bx[i] < margin)      { bx[i] = margin;      bvx[i] = -bvx[i] * WALL_BOUNCE; }
+        if (bx[i] > W - margin)  { bx[i] = W - margin;  bvx[i] = -bvx[i] * WALL_BOUNCE; }
+        if (by[i] < margin)      { by[i] = margin;      bvy[i] = -bvy[i] * WALL_BOUNCE; }
+        if (by[i] > H - margin)  { by[i] = H - margin;  bvy[i] = -bvy[i] * WALL_BOUNCE; }
 
         /* Clamp velocity */
         float max_v = 600.0f;
