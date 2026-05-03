@@ -10,6 +10,7 @@
 #include "cJSON.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 #include "tts_test_wav.h"
 #include <string.h>
 #include <stdio.h>
@@ -73,7 +74,7 @@ static esp_err_t http_post(const char *url, const char *body,
         .transport_type = HTTP_TRANSPORT_OVER_SSL,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .event_handler = hevt, .user_data = &ctx,
-        .buffer_size = 8192, .buffer_size_tx = 4096,
+        .buffer_size = 16384, .buffer_size_tx = 4096,
         .keep_alive_enable = false,
     };
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
@@ -147,7 +148,8 @@ static void history_add(const char *u, const char *a)
 static char *llm_chat(const char *question)
 {
     if (!question) { ESP_LOGI(TAG, "LLM: null q"); return NULL; }
-    char *body = malloc(BODY_MAX);
+    char *body = heap_caps_malloc(BODY_MAX, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!body) body = malloc(BODY_MAX);
     if (!body) { ESP_LOGI(TAG, "LLM: no mem"); return NULL; }
 
     char *e1 = malloc(2048), *e2 = malloc(2048);
@@ -195,6 +197,30 @@ static char *llm_chat(const char *question)
 }
 
 /* ---- TTS ---- */
+static char *extract_b64(const char *json, int json_len)
+{
+    const char *needle = "\"data\":\"";
+    const char *p = json;
+    const char *end = json + json_len;
+    while (p < end - 20) {
+        const char *f = memchr(p, '"', end - p);
+        if (!f) break;
+        if (strncmp(f, needle, 8) == 0) {
+            const char *start = f + 8;
+            const char *q = start;
+            while (q < end && *q != '"') q++;
+            int bl = q - start;
+            if (bl > 0) {
+                char *out = malloc(bl + 1);
+                if (out) { memcpy(out, start, bl); out[bl] = 0; }
+                return out;
+            }
+        }
+        p = f + 1;
+    }
+    return NULL;
+}
+
 static int b64_decode(const char *in, uint8_t *out, int max)
 {
     static const char t[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -207,9 +233,12 @@ static int b64_decode(const char *in, uint8_t *out, int max)
 
 static bool tts_play(const char *text)
 {
-    ESP_LOGI(TAG, "T0 TTS start heap=%lu", (unsigned long)esp_get_free_heap_size());
+    ESP_LOGI(TAG, "T0 TTS start heap=%lu psram=%lu",
+        (unsigned long)esp_get_free_heap_size(),
+        (unsigned long)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+
     char *e = malloc(2048), *body = malloc(4096);
-    if (!e || !body) { ESP_LOGI(TAG, "T1 TTS no mem for e/body"); free(e); free(body); return false; }
+    if (!e || !body) { ESP_LOGI(TAG, "T1 TTS no mem"); free(e); free(body); return false; }
     json_esc(text, e, 2048);
     snprintf(body, 4096,
         "{\"model\":\"mimo-v2-tts\","
@@ -217,53 +246,51 @@ static bool tts_play(const char *text)
         "{\"role\":\"user\",\"content\":\"please speak\"},"
         "{\"role\":\"assistant\",\"content\":\"%s\"}"
         "],\"audio\":{\"format\":\"wav\",\"voice\":\"mimo_default\"}}", e);
-    free(e); e = NULL;
-    ESP_LOGI(TAG, "TTS body: %s", body);
+    free(e);
 
-    uint8_t *buf = malloc(262144);
-    if (!buf) { ESP_LOGI(TAG, "T1 TTS no mem for resp buf, heap=%lu", (unsigned long)esp_get_free_heap_size()); free(body); return false; }
-    ESP_LOGI(TAG, "T1.5 alloc ok heap=%lu", (unsigned long)esp_get_free_heap_size());
-    int len, status;
-    esp_err_t err = http_post("https://api.xiaomimimo.com/v1/chat/completions",
-              body, "Authorization", "Bearer " MIMO_API_KEY, NULL, NULL,
-              buf, 262144, &len, &status, 120000);
-    free(body); body = NULL;
-    ESP_LOGI(TAG, "T2 TTS HTTP err=%d s=%d l=%d heap=%lu", err, status, len, (unsigned long)esp_get_free_heap_size());
+    /* Allocate from PSRAM */
+    uint8_t *buf = heap_caps_malloc(327680, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) buf = malloc(327680);
+    if (!buf) { ESP_LOGE(TAG, "T1 TTS no resp buf"); free(body); return false; }
+
     bool ok = false;
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "T2 HTTP request failed: %s", esp_err_to_name(err));
-    } else if (status == 200 && len > 0) {
-        ESP_LOGI(TAG, "TTS raw: %.200s", (char*)buf);
-        cJSON *r = cJSON_Parse((char*)buf);
-        if (r) {
-            cJSON *j = cJSON_GetObjectItem(r, "choices");
-            if (j) j = cJSON_GetArrayItem(j, 0);
-            if (j) j = cJSON_GetObjectItem(j, "message");
-            if (j) j = cJSON_GetObjectItem(j, "audio");
-            if (j) j = cJSON_GetObjectItem(j, "data");
-            if (j && j->valuestring) {
-                char *b64 = strdup(j->valuestring);
-                int bl = b64 ? strlen(b64) : 0;
-                ESP_LOGI(TAG, "T2.5 b64 len=%d heap=%lu", bl, (unsigned long)esp_get_free_heap_size());
-                cJSON_Delete(r); r = NULL;
-                free(buf); buf = NULL;
-                if (b64 && bl > 0) {
-                    uint8_t *wav = malloc(bl);
-                    if (wav) {
-                        int wlen = b64_decode(b64, wav, bl);
-                        ESP_LOGI(TAG, "T3 wav len=%d heap=%lu", wlen, (unsigned long)esp_get_free_heap_size());
-                        if (wlen > 44) { sys_audio_play_wav(wav, wlen); ok = true; }
-                        else ESP_LOGW(TAG, "T3 wav too short: %d", wlen);
-                        free(wav);
-                    } else ESP_LOGE(TAG, "T3 no mem for wav, need %d, heap=%lu", bl, (unsigned long)esp_get_free_heap_size());
-                }
-                free(b64);
-            } else { ESP_LOGW(TAG, "T4 no audio data in JSON"); cJSON_Delete(r); }
-        } else { ESP_LOGE(TAG, "T5 cJSON parse fail"); }
-    } else if (status != 200) {
-        ESP_LOGE(TAG, "T2 HTTP status=%d body=%.200s", status, (char*)buf);
+    for (int attempt = 0; attempt < 2 && !ok; attempt++) {
+        if (attempt > 0) {
+            ESP_LOGW(TAG, "TTS retry attempt %d", attempt);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+        }
+        ESP_LOGI(TAG, "T1.5 heap=%lu", (unsigned long)esp_get_free_heap_size());
+        int len, status;
+        esp_err_t err = http_post("https://api.xiaomimimo.com/v1/chat/completions",
+                  body, "Authorization", "Bearer " MIMO_API_KEY, NULL, NULL,
+                  buf, 327680, &len, &status, 120000);
+        ESP_LOGI(TAG, "T2 TTS HTTP err=%d s=%d l=%d", err, status, len);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "T2 HTTP request failed: %s", esp_err_to_name(err));
+            continue;
+        }
+        if (status != 200 || len <= 0) {
+            ESP_LOGE(TAG, "T2 HTTP status=%d", status);
+            continue;
+        }
+
+        char *b64 = extract_b64((char*)buf, len);
+        int bl = b64 ? strlen(b64) : 0;
+        ESP_LOGI(TAG, "T2.5 b64 len=%d", bl);
+        if (b64 && bl > 0) {
+            uint8_t *wav = malloc(bl);
+            if (wav) {
+                int wlen = b64_decode(b64, wav, bl);
+                ESP_LOGI(TAG, "T3 wav len=%d", wlen);
+                if (wlen > 44) { sys_audio_play_wav(wav, wlen); ok = true; }
+                else ESP_LOGW(TAG, "T3 wav too short: %d", wlen);
+                free(wav);
+            } else ESP_LOGE(TAG, "T3 no mem for wav");
+            free(b64);
+        } else ESP_LOGW(TAG, "T4 no audio data found");
     }
     free(buf);
+    free(body);
     return ok;
 }
 

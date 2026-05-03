@@ -14,8 +14,8 @@ static const char *TAG = "sys_audio";
 #define PIN_WS     GPIO_NUM_45
 #define PIN_DOUT   GPIO_NUM_8
 #define PIN_PA     GPIO_NUM_46
-#define SAMPLE_RATE 16000
-#define MCLK_MULT   384
+#define SAMPLE_RATE 24000
+#define MCLK_MULT   256
 
 static i2s_chan_handle_t tx = NULL;
 static bool inited = false;
@@ -42,9 +42,10 @@ void sys_audio_init(void)
 
     i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     cc.auto_clear = true;
+    cc.dma_desc_num = 8;
+    cc.dma_frame_num = 512;
     if (i2s_new_channel(&cc, &tx, NULL) != ESP_OK) {
         printf("AUDIO: I2S busy, using existing\n");
-        /* Already initialized from previous call, OK */
     }
 
     i2s_std_config_t sc = {
@@ -73,39 +74,62 @@ void sys_audio_play_wav(const uint8_t *data, int len)
             off = i + 8; break;
         }
     }
-    if (!off) return;
+    if (!off) { printf("AUDIO: no data chunk\n"); return; }
 
     int channels = *(short*)(data + 22);
     int bits     = *(short*)(data + 34);
+    int wav_sr   = *(int*)(data + 24);
     int pcm_len  = len - off;
     const uint8_t *pcm = data + off;
+    printf("AUDIO: %dHz %dbit %dch pcm=%d\n", wav_sr, bits, channels, pcm_len);
 
+    int total_written = 0;
     if (channels == 1 && bits == 16) {
         /* Mono → stereo */
         int n = pcm_len / 2;
         int16_t *buf = malloc(n * 4);
-        if (!buf) return;
+        if (!buf) { printf("AUDIO: stereo buf OOM\n"); return; }
         const int16_t *src = (const int16_t*)pcm;
         for (int i = 0; i < n; i++) { buf[i*2] = src[i]; buf[i*2+1] = src[i]; }
-        size_t w;
-        i2s_channel_write(tx, buf, n * 4, &w, pdMS_TO_TICKS(3000));
+        int stereo_bytes = n * 4;
+        /* Write in chunks — DMA buffer is small */
+        while (total_written < stereo_bytes) {
+            size_t w = 0;
+            esp_err_t r = i2s_channel_write(tx, (uint8_t*)buf + total_written,
+                            stereo_bytes - total_written, &w, pdMS_TO_TICKS(10000));
+            total_written += w;
+            if (r != ESP_OK || w == 0) break;
+        }
         free(buf);
-        printf("AUDIO: wrote %d\n", (int)w);
     } else {
-        size_t w;
-        i2s_channel_write(tx, pcm, pcm_len, &w, pdMS_TO_TICKS(3000));
-        printf("AUDIO: wrote %d\n", (int)w);
+        while (total_written < pcm_len) {
+            size_t w = 0;
+            esp_err_t r = i2s_channel_write(tx, pcm + total_written,
+                            pcm_len - total_written, &w, pdMS_TO_TICKS(10000));
+            total_written += w;
+            if (r != ESP_OK || w == 0) break;
+        }
+    }
+    printf("AUDIO: total_written=%d\n", total_written);
+
+    /* Flush: write silence to push remaining data through DMA pipeline */
+    int16_t zero[512] = {0};
+    for (int i = 0; i < 4; i++) {
+        size_t w = 0;
+        i2s_channel_write(tx, zero, sizeof(zero), &w, pdMS_TO_TICKS(1000));
     }
 
-    /* Drain */
-    vTaskDelay(pdMS_TO_TICKS(200));
+    /* Wait for DMA to drain + codec output */
+    int play_ms = (wav_sr > 0) ? (pcm_len / (channels * bits / 8) * 1000 / wav_sr) + 1500 : 3000;
+    printf("AUDIO: waiting %dms\n", play_ms);
+    vTaskDelay(pdMS_TO_TICKS(play_ms));
 }
 
 void sys_audio_play_pcm(const int16_t *stereo_data, int sample_count)
 {
     if (!tx) { printf("AUDIO: pcm not ready\n"); return; }
     size_t w;
-    i2s_channel_write(tx, stereo_data, sample_count * 4, &w, pdMS_TO_TICKS(3000));
+    i2s_channel_write(tx, stereo_data, sample_count * 4, &w, pdMS_TO_TICKS(10000));
     printf("AUDIO: pcm wrote %d\n", (int)w);
     vTaskDelay(pdMS_TO_TICKS(200));
 }
