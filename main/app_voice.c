@@ -186,11 +186,15 @@ static char *llm_chat(const char *question)
         if (attempt > 0) {
             ESP_LOGW(TAG, "LLM retry %d", attempt);
             vTaskDelay(pdMS_TO_TICKS(2000));
+        } else {
+            /* Jitter to avoid server rate-limit window on reconnects */
+            int jitter_ms = 500 + (esp_random() % 500);
+            vTaskDelay(pdMS_TO_TICKS(jitter_ms));
         }
         int len, status;
         http_post("https://api.deepseek.com/v1/chat/completions",
                   body, "Authorization", "Bearer " DEEPSEEK_API_KEY, NULL, NULL,
-                  buf, 16384, &len, &status, 25000);
+                  buf, 16384, &len, &status, 8000);
         ESP_LOGI(TAG, "LLM: s=%d l=%d", status, len);
         if (status == 200 && len > 0) {
             cJSON *root = cJSON_Parse((char*)buf);
@@ -262,9 +266,9 @@ static bool tts_play(const char *text)
         "],\"audio\":{\"format\":\"wav\",\"voice\":\"mimo_default\"}}", e);
     free(e);
 
-    /* Allocate from PSRAM. 1MB holds ~11s of TTS audio (mono 16-bit 24kHz base64). */
-    uint8_t *buf = heap_caps_malloc(1048576, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf) buf = malloc(1048576);
+    /* Allocate from PSRAM. 2MB holds ~22s of TTS audio (mono 16-bit 24kHz base64). */
+    uint8_t *buf = heap_caps_malloc(2097152, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) buf = malloc(2097152);
     if (!buf) { ESP_LOGE(TAG, "T1 TTS no resp buf"); free(body); return false; }
 
     bool ok = false;
@@ -277,7 +281,7 @@ static bool tts_play(const char *text)
         int len, status;
         esp_err_t err = http_post("https://api.xiaomimimo.com/v1/chat/completions",
                   body, "Authorization", "Bearer " MIMO_API_KEY, NULL, NULL,
-                  buf, 1048576, &len, &status, 120000);
+                  buf, 2097152, &len, &status, 120000);
         ESP_LOGI(TAG, "T2 TTS HTTP err=%d s=%d l=%d", err, status, len);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "T2 HTTP request failed: %s", esp_err_to_name(err));
