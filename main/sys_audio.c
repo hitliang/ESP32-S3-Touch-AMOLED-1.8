@@ -40,15 +40,10 @@ void sys_audio_init(void)
     es8311_voice_volume_set(es, 80, NULL);
     es8311_microphone_config(es, false);
 
-    i2s_chan_config_t cc = {
-        .id = I2S_NUM_0,
-        .role = I2S_ROLE_MASTER,
-        .dma_desc_num = 6,
-        .dma_frame_num = 240,
-        .auto_clear_after_cb = true,
-        .auto_clear_before_cb = false,
-        .intr_priority = 0,
-    };
+    i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    cc.auto_clear = true;
+    cc.dma_desc_num = 6;
+    cc.dma_frame_num = 240;
     if (i2s_new_channel(&cc, &tx, NULL) != ESP_OK) {
         printf("AUDIO: I2S busy, using existing\n");
     }
@@ -130,18 +125,12 @@ void sys_audio_play_wav(const uint8_t *data, int len)
     }
     printf("AUDIO: total_written=%d\n", total_written);
 
-    /* Calculate how long the audio should play */
-    int play_ms = (wav_sr > 0) ? (pcm_len / (channels * bits / 8) * 1000 / wav_sr) + 1000 : 3000;
-    printf("AUDIO: play duration=%dms\n", play_ms);
-
-    /* Feed silence into DMA continuously until playback time is exhausted.
-       This prevents I2S DMA underrun which would stop the clock and cut audio. */
-    int16_t silence[256] = {0};
-    TickType_t end = xTaskGetTickCount() + pdMS_TO_TICKS(play_ms);
-    while (xTaskGetTickCount() < end) {
-        size_t w = 0;
-        i2s_channel_write(tx, silence, sizeof(silence), &w, pdMS_TO_TICKS(500));
-    }
+    /* Wait for DMA to fully drain — block until all data is transmitted.
+       i2s_channel_write blocks until data is copied to DMA ring buffer,
+       but DMA still needs time to clock it out to the codec. */
+    int play_ms = (wav_sr > 0) ? (pcm_len / (channels * bits / 8) * 1000 / wav_sr) + 1500 : 3000;
+    printf("AUDIO: wait %dms\n", play_ms);
+    vTaskDelay(pdMS_TO_TICKS(play_ms));
 }
 
 void sys_audio_play_pcm(const int16_t *stereo_data, int sample_count)
