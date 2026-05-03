@@ -1,17 +1,22 @@
 # 开发操作手册
 
-## 一键编译烧写
+## 一键编译烧写（PowerShell）
 
-```bat
+以管理员身份打开 PowerShell，执行：
+
+```powershell
+$env:IDF_PATH = "D:\program\idf\v5.4\esp-idf"
+$env:PATH = "C:\Users\reddy\.espressif\python_env\idf5.4_py3.11_env\Scripts;D:\program\idf\v5.4\esp-idf\tools;C:\Users\reddy\.espressif\tools\cmake\3.30.2\bin;C:\Users\reddy\.espressif\tools\ninja\1.12.1;C:\Users\reddy\.espressif\tools\xtensa-esp-elf\esp-14.2.0_20241119\xtensa-esp-elf\bin;C:\Users\reddy\.espressif\tools\riscv32-esp-elf\esp-14.2.0_20241119\riscv32-esp-elf\bin;C:\Users\reddy\.espressif\tools\esp-rom-elfs\20241011;C:\Users\reddy\.espressif\tools\idf-git\2.39.2\cmd;" + $env:PATH
 cd D:\ESP32-S3-Touch-AMOLED-1.8-main
-build_flash.bat
+python "$env:IDF_PATH\tools\idf.py" build
+python "$env:IDF_PATH\tools\idf.py" flash -p COM9
 ```
 
-## sdkconfig 变了需要重新配置
+## sdkconfig 变了需要重新配置（PowerShell）
 
-```bat
-rd /s /q build
-build_flash.bat
+```powershell
+Remove-Item -Recurse -Force build
+# 然后重新运行上面的编译烧写命令
 ```
 
 ## 代码中有新文件需要添加到编译

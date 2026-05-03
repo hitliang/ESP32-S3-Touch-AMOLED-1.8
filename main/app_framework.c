@@ -23,11 +23,14 @@ static void app_dummy_create(lv_obj_t *parent) {
 static void app_dummy_destroy(void) {}
 static void app_dummy_resume(void) {}
 
+/* Static storage for placeholder entries — must NOT be compound literals
+   on the stack because app_framework_init() returns and stack is reclaimed. */
+static const app_entry_t ph_music     = { .name = "Music",     .create = app_dummy_create, .destroy = app_dummy_destroy, .resume = app_dummy_resume };
+static const app_entry_t ph_pedometer = { .name = "Pedometer", .create = app_dummy_create, .destroy = app_dummy_destroy, .resume = app_dummy_resume };
+static const app_entry_t ph_more      = { .name = "More",      .create = app_dummy_create, .destroy = app_dummy_destroy, .resume = app_dummy_resume };
+
 #define APP(name)  &app_##name
-#define PLACEHOLDER(name_str)  &(const app_entry_t){ \
-    .name = name_str, \
-    .create = app_dummy_create, .destroy = app_dummy_destroy, .resume = app_dummy_resume, \
-}
+#define PLACEHOLDER(ph)  (&ph)
 
 /* ------------------------------------------------------------------ */
 /*  App registry                                                        */
@@ -64,11 +67,11 @@ void app_framework_init(void)
     app_registry[idx++] = APP(attitude);
     app_registry[idx++] = APP(weather);
     app_registry[idx++] = APP(voice);
-    app_registry[idx++] = PLACEHOLDER("Music");
+    app_registry[idx++] = PLACEHOLDER(ph_music);
     app_registry[idx++] = APP(snake);
-    app_registry[idx++] = PLACEHOLDER("Pedometer");
+    app_registry[idx++] = PLACEHOLDER(ph_pedometer);
     app_registry[idx++] = APP(ball);
-    app_registry[idx++] = PLACEHOLDER("More");
+    app_registry[idx++] = PLACEHOLDER(ph_more);
     app_count = idx;
 
     /* Create all screens upfront */

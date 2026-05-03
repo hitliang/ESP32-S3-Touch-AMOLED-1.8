@@ -88,18 +88,26 @@ void sys_audio_play_wav(const uint8_t *data, int len)
         const int16_t *src = (const int16_t*)pcm;
         for (int i = 0; i < n; i++) { buf[i*2] = src[i]; buf[i*2+1] = src[i]; }
         size_t w;
-        i2s_channel_write(tx, buf, n * 4, &w, portMAX_DELAY);
+        i2s_channel_write(tx, buf, n * 4, &w, pdMS_TO_TICKS(3000));
         free(buf);
         printf("AUDIO: wrote %d\n", (int)w);
     } else {
         size_t w;
-        i2s_channel_write(tx, pcm, pcm_len, &w, portMAX_DELAY);
+        i2s_channel_write(tx, pcm, pcm_len, &w, pdMS_TO_TICKS(3000));
         printf("AUDIO: wrote %d\n", (int)w);
     }
 
     /* Drain */
-    i2s_channel_disable(tx);
-    i2s_channel_enable(tx);
+    vTaskDelay(pdMS_TO_TICKS(200));
+}
+
+void sys_audio_play_pcm(const int16_t *stereo_data, int sample_count)
+{
+    if (!tx) { printf("AUDIO: pcm not ready\n"); return; }
+    size_t w;
+    i2s_channel_write(tx, stereo_data, sample_count * 4, &w, pdMS_TO_TICKS(3000));
+    printf("AUDIO: pcm wrote %d\n", (int)w);
+    vTaskDelay(pdMS_TO_TICKS(200));
 }
 
 bool sys_audio_is_playing(void) { return false; }

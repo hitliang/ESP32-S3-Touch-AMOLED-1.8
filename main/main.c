@@ -96,7 +96,7 @@ void app_main(void)
     sys_imu_init();
     sys_button_init();
 
-    /* Deferred init — may block if hardware not ready, do after UI stable */
+    /* Deferred init — audio/sdcard initialized on-demand in app layers */
     /* sys_audio_init(); */
     /* sys_sdcard_init(); */
 
