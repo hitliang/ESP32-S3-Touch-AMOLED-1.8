@@ -180,25 +180,31 @@ static char *llm_chat(const char *question)
 
     uint8_t *buf = malloc(16384);
     if (!buf) { free(body); free(e1); free(e2); ESP_LOGI(TAG, "LLM: no buf"); return NULL; }
-    int len, status;
-    http_post("https://api.deepseek.com/v1/chat/completions",
-              body, "Authorization", "Bearer " DEEPSEEK_API_KEY, NULL, NULL,
-              buf, 16384, &len, &status, 25000);
-    free(body);
-    ESP_LOGI(TAG, "LLM: s=%d l=%d", status, len);
 
     char *reply = NULL;
-    if (status == 200 && len > 0) {
-        cJSON *root = cJSON_Parse((char*)buf);
-        if (root) {
-            cJSON *j = cJSON_GetObjectItem(root, "choices");
-            if (j) j = cJSON_GetArrayItem(j, 0);
-            if (j) j = cJSON_GetObjectItem(j, "message");
-            if (j) j = cJSON_GetObjectItem(j, "content");
-            if (j && j->valuestring) reply = strdup(j->valuestring);
-            cJSON_Delete(root);
+    for (int attempt = 0; attempt < 3 && !reply; attempt++) {
+        if (attempt > 0) {
+            ESP_LOGW(TAG, "LLM retry %d", attempt);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+        }
+        int len, status;
+        http_post("https://api.deepseek.com/v1/chat/completions",
+                  body, "Authorization", "Bearer " DEEPSEEK_API_KEY, NULL, NULL,
+                  buf, 16384, &len, &status, 25000);
+        ESP_LOGI(TAG, "LLM: s=%d l=%d", status, len);
+        if (status == 200 && len > 0) {
+            cJSON *root = cJSON_Parse((char*)buf);
+            if (root) {
+                cJSON *j = cJSON_GetObjectItem(root, "choices");
+                if (j) j = cJSON_GetArrayItem(j, 0);
+                if (j) j = cJSON_GetObjectItem(j, "message");
+                if (j) j = cJSON_GetObjectItem(j, "content");
+                if (j && j->valuestring) reply = strdup(j->valuestring);
+                cJSON_Delete(root);
+            }
         }
     }
+    free(body);
     free(buf);
     free(e1); free(e2);
     return reply;
