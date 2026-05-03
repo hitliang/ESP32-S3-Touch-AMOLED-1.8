@@ -12,6 +12,7 @@
 #include "esp_system.h"
 #include "esp_heap_caps.h"
 #include "tts_test_wav.h"
+#include "tts_test_short_wav.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,13 +50,17 @@ static char *json_esc(const char *s, char *buf, int max)
 }
 
 /* ---- HTTP ---- */
-typedef struct { uint8_t *buf; int len, max, status; } hctx_t;
+typedef struct { uint8_t *buf; int len, max, status; bool truncated; } hctx_t;
 static esp_err_t hevt(esp_http_client_event_t *e)
 {
     hctx_t *c = (hctx_t *)e->user_data;
-    if (e->event_id == HTTP_EVENT_ON_DATA && c->len + e->data_len < c->max) {
-        memcpy(c->buf + c->len, e->data, e->data_len);
-        c->len += e->data_len; c->buf[c->len] = 0;
+    if (e->event_id == HTTP_EVENT_ON_DATA) {
+        if (c->len + e->data_len < c->max) {
+            memcpy(c->buf + c->len, e->data, e->data_len);
+            c->len += e->data_len; c->buf[c->len] = 0;
+        } else {
+            c->truncated = true;
+        }
     }
     if (e->event_id == HTTP_EVENT_ON_FINISH)
         c->status = esp_http_client_get_status_code(e->client);
@@ -68,7 +73,7 @@ static esp_err_t http_post(const char *url, const char *body,
                             uint8_t *buf, int max, int *olen, int *osta,
                             int timeout_ms)
 {
-    hctx_t ctx = { .buf = buf, .len = 0, .max = max, .status = 0 };
+    hctx_t ctx = { .buf = buf, .len = 0, .max = max, .status = 0, .truncated = false };
     esp_http_client_config_t cfg = {
         .url = url, .timeout_ms = timeout_ms,
         .transport_type = HTTP_TRANSPORT_OVER_SSL,
@@ -89,6 +94,9 @@ static esp_err_t http_post(const char *url, const char *body,
     esp_err_t err = esp_http_client_perform(cli);
     esp_http_client_cleanup(cli);
     *olen = ctx.len; *osta = ctx.status;
+    if (ctx.truncated) {
+        ESP_LOGW(TAG, "HTTP response truncated! buf=%d max=%d", ctx.len, ctx.max);
+    }
     return err;
 }
 
@@ -248,9 +256,9 @@ static bool tts_play(const char *text)
         "],\"audio\":{\"format\":\"wav\",\"voice\":\"mimo_default\"}}", e);
     free(e);
 
-    /* Allocate from PSRAM */
-    uint8_t *buf = heap_caps_malloc(327680, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!buf) buf = malloc(327680);
+    /* Allocate from PSRAM. 1MB holds ~11s of TTS audio (mono 16-bit 24kHz base64). */
+    uint8_t *buf = heap_caps_malloc(1048576, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) buf = malloc(1048576);
     if (!buf) { ESP_LOGE(TAG, "T1 TTS no resp buf"); free(body); return false; }
 
     bool ok = false;
@@ -263,7 +271,7 @@ static bool tts_play(const char *text)
         int len, status;
         esp_err_t err = http_post("https://api.xiaomimimo.com/v1/chat/completions",
                   body, "Authorization", "Bearer " MIMO_API_KEY, NULL, NULL,
-                  buf, 327680, &len, &status, 120000);
+                  buf, 1048576, &len, &status, 120000);
         ESP_LOGI(TAG, "T2 TTS HTTP err=%d s=%d l=%d", err, status, len);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "T2 HTTP request failed: %s", esp_err_to_name(err));
@@ -462,8 +470,10 @@ static void tts_raw_tls_task(void *arg)
 }
 
 static void on_q3(lv_event_t *e) {
-    ESP_LOGI(TAG, "BTN3 clicked - raw TLS test");
-    xTaskCreate(tts_raw_tls_task, "tls_test", 8192, NULL, 5, NULL);
+    ESP_LOGI(TAG, "BTN3 - embedded WAV test");
+    sys_audio_init();
+    sys_audio_play_wav(tts_test_short_wav, tts_test_short_wav_len);
+    ESP_LOGI(TAG, "BTN3 - play done");
 }
 
 static void create(lv_obj_t *parent)

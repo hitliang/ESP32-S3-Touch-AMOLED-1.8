@@ -60,12 +60,10 @@ static void audio_output_task(void *arg)
                 free(chunk.data);
             }
             if (chunk.last) {
-                /* All data copied to DMA ring buffer, but DMA still clocking it out.
-                   Wait for DMA to fully drain before signaling done.
-                   Stereo 16-bit @24kHz = 96000 bytes/sec */
-                int drain_ms = (total_bytes > 0) ? (total_bytes * 1000 / 96000) + 200 : 500;
-                printf("AUDIO: drain %d bytes, wait %dms\n", total_bytes, drain_ms);
-                vTaskDelay(pdMS_TO_TICKS(drain_ms));
+                /* DMA buffer holds at most dma_desc_num * dma_frame_num * 4 bytes.
+                   6 * 240 * 4 = 5760 bytes. At 96000 bytes/sec, drains in 60ms.
+                   Add 240ms safety margin → 300ms total. */
+                vTaskDelay(pdMS_TO_TICKS(300));
                 total_bytes = 0;
                 xEventGroupSetBits(audio_events, AUDIO_EVT_DONE);
             }
@@ -97,6 +95,7 @@ void sys_audio_init(void)
     /* I2S channel — config aligned with xiaozhi */
     i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     cc.auto_clear = true;
+    cc.auto_clear_after_cb = true;
     cc.dma_desc_num = 6;
     cc.dma_frame_num = 240;
     if (i2s_new_channel(&cc, &tx, NULL) != ESP_OK) {
