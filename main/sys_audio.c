@@ -112,17 +112,18 @@ void sys_audio_play_wav(const uint8_t *data, int len)
     }
     printf("AUDIO: total_written=%d\n", total_written);
 
-    /* Flush: write silence to push remaining data through DMA pipeline */
-    int16_t zero[512] = {0};
-    for (int i = 0; i < 4; i++) {
-        size_t w = 0;
-        i2s_channel_write(tx, zero, sizeof(zero), &w, pdMS_TO_TICKS(1000));
-    }
+    /* Calculate how long the audio should play */
+    int play_ms = (wav_sr > 0) ? (pcm_len / (channels * bits / 8) * 1000 / wav_sr) + 1000 : 3000;
+    printf("AUDIO: play duration=%dms\n", play_ms);
 
-    /* Wait for DMA to drain + codec output */
-    int play_ms = (wav_sr > 0) ? (pcm_len / (channels * bits / 8) * 1000 / wav_sr) + 1500 : 3000;
-    printf("AUDIO: waiting %dms\n", play_ms);
-    vTaskDelay(pdMS_TO_TICKS(play_ms));
+    /* Feed silence into DMA continuously until playback time is exhausted.
+       This prevents I2S DMA underrun which would stop the clock and cut audio. */
+    int16_t silence[256] = {0};
+    TickType_t end = xTaskGetTickCount() + pdMS_TO_TICKS(play_ms);
+    while (xTaskGetTickCount() < end) {
+        size_t w = 0;
+        i2s_channel_write(tx, silence, sizeof(silence), &w, pdMS_TO_TICKS(500));
+    }
 }
 
 void sys_audio_play_pcm(const int16_t *stereo_data, int sample_count)
