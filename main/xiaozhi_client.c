@@ -1,6 +1,8 @@
 #include "xiaozhi_client.h"
 #include "secrets.h"
 #include "esp_websocket_client.h"
+#include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "esp_log.h"
 #include "esp_tls.h"
 #include "cJSON.h"
@@ -18,8 +20,10 @@
 
 static const char *TAG = "xz_client";
 
+/* Official xiaozhi OTA server */
+#define XZ_OTA_URL  "https://api.tenclass.net/xiaozhi/ota/"
 #ifndef XZ_WS_URL
-#define XZ_WS_URL "ws://192.168.1.100:8000"
+#define XZ_WS_URL    ""  /* empty → fetch from OTA server */
 #endif
 
 /* ---- Opus config ---- */
@@ -257,6 +261,70 @@ static void handle_binary(const uint8_t *data, int len)
     }
 }
 
+/* ---- Fetch WebSocket URL from OTA server ---- */
+static bool fetch_ws_url_from_ota(char *url_out, int max_len)
+{
+    ESP_LOGI(TAG, "Fetching WS URL from OTA server...");
+    char *buf = malloc(8192);
+    if (!buf) return false;
+
+    esp_http_client_config_t http_cfg = {
+        .url = XZ_OTA_URL,
+        .timeout_ms = 15000,
+        .transport_type = HTTP_TRANSPORT_OVER_SSL,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .buffer_size = 4096,
+        .keep_alive_enable = false,
+    };
+    esp_http_client_handle_t http = esp_http_client_init(&http_cfg);
+    esp_http_client_set_method(http, HTTP_METHOD_GET);
+    esp_http_client_set_header(http, "User-Agent", "xiaozhi-esp32/1.0");
+    esp_http_client_set_header(http, "Device-Id", cfg.device_id);
+    esp_http_client_set_header(http, "Client-Id", cfg.device_id);
+    esp_http_client_set_header(http, "Content-Type", "application/json");
+    esp_http_client_set_header(http, "Accept-Language", "zh-CN");
+
+    esp_err_t err = esp_http_client_perform(http);
+    int status = esp_http_client_get_status_code(http);
+    int read_len = 0;
+
+    if (err == ESP_OK && status == 200) {
+        read_len = esp_http_client_read_response(http, buf, 8191);
+        if (read_len > 0) buf[read_len] = 0;
+    }
+    esp_http_client_cleanup(http);
+
+    if (read_len <= 0) {
+        ESP_LOGE(TAG, "OTA fetch failed: status=%d", status);
+        free(buf);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "OTA response: %.*s", read_len > 200 ? 200 : read_len, buf);
+    cJSON *root = cJSON_Parse(buf);
+    free(buf);
+    if (!root) return false;
+
+    bool ok = false;
+    cJSON *ws = cJSON_GetObjectItem(root, "websocket");
+    if (cJSON_IsObject(ws)) {
+        cJSON *url_item = cJSON_GetObjectItem(ws, "url");
+        if (cJSON_IsString(url_item) && url_item->valuestring) {
+            strncpy(url_out, url_item->valuestring, max_len - 1);
+            url_out[max_len - 1] = 0;
+            ok = true;
+            ESP_LOGI(TAG, "WS URL from OTA: %s", url_out);
+        }
+        /* Also check for version */
+        cJSON *ver = cJSON_GetObjectItem(ws, "version");
+        if (cJSON_IsNumber(ver)) {
+            ESP_LOGI(TAG, "OTA version: %d", ver->valueint);
+        }
+    }
+    cJSON_Delete(root);
+    return ok;
+}
+
 /* ---- WebSocket event handler ---- */
 static void ws_event_handler(void *arg, esp_event_base_t base,
                               int32_t event_id, void *event_data)
@@ -300,6 +368,17 @@ static void client_thread(void *arg)
         client_task = NULL;
         vTaskDelete(NULL);
         return;
+    }
+
+    /* If no WS URL configured, fetch from official OTA server */
+    if (!cfg.ws_url[0]) {
+        if (!fetch_ws_url_from_ota(cfg.ws_url, sizeof(cfg.ws_url))) {
+            ESP_LOGE(TAG, "Failed to get WS URL from OTA");
+            set_state(XZ_STATE_IDLE, "OTA failed");
+            client_task = NULL;
+            vTaskDelete(NULL);
+            return;
+        }
     }
 
     esp_websocket_client_config_t ws_cfg = {
