@@ -43,6 +43,7 @@ static EventGroupHandle_t audio_events = NULL;
 static void audio_output_task(void *arg)
 {
     audio_chunk_t chunk;
+    int total_bytes = 0;  /* track bytes for drain timing */
     while (1) {
         if (xQueueReceive(audio_queue, &chunk, portMAX_DELAY) == pdTRUE) {
             if (chunk.data && chunk.bytes > 0) {
@@ -55,9 +56,17 @@ static void audio_output_task(void *arg)
                     sent += w;
                     if (r != ESP_OK || w == 0) break;
                 }
+                total_bytes += sent;
                 free(chunk.data);
             }
             if (chunk.last) {
+                /* All data copied to DMA ring buffer, but DMA still clocking it out.
+                   Wait for DMA to fully drain before signaling done.
+                   Stereo 16-bit @24kHz = 96000 bytes/sec */
+                int drain_ms = (total_bytes > 0) ? (total_bytes * 1000 / 96000) + 200 : 500;
+                printf("AUDIO: drain %d bytes, wait %dms\n", total_bytes, drain_ms);
+                vTaskDelay(pdMS_TO_TICKS(drain_ms));
+                total_bytes = 0;
                 xEventGroupSetBits(audio_events, AUDIO_EVT_DONE);
             }
         }
