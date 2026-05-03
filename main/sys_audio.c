@@ -17,6 +17,7 @@ static const char *TAG = "sys_audio";
 #define PIN_BCK    GPIO_NUM_9
 #define PIN_WS     GPIO_NUM_45
 #define PIN_DOUT   GPIO_NUM_8
+#define PIN_DIN    GPIO_NUM_10
 #define PIN_PA     GPIO_NUM_46
 #define SAMPLE_RATE 24000
 #define MCLK_MULT   256
@@ -32,12 +33,21 @@ typedef struct {
 } audio_chunk_t;
 
 static i2s_chan_handle_t tx = NULL;
+static i2s_chan_handle_t rx = NULL;
 static bool inited = false;
 
 static QueueHandle_t audio_queue = NULL;
 static TaskHandle_t  audio_task_handle = NULL;
 static EventGroupHandle_t audio_events = NULL;
 #define AUDIO_EVT_DONE  BIT0
+
+/* Recording state */
+static bool rec_running = false;
+static int16_t *rec_buf = NULL;
+static volatile int rec_samples = 0;
+static int rec_max_samples = 0;
+static TaskHandle_t rec_task_handle = NULL;
+#define REC_CHUNK_SAMPLES 480  /* read 480 mono samples = 10ms @24kHz */
 
 /* ---- Output task: reads chunks from queue, writes to I2S ---- */
 static void audio_output_task(void *arg)
@@ -124,6 +134,42 @@ void sys_audio_init(void)
     };
     if (tx) i2s_channel_init_std_mode(tx, &sc);
     if (tx) i2s_channel_enable(tx);
+
+    /* I2S RX channel for microphone */
+    i2s_chan_config_t rcc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_SLAVE);
+    rcc.auto_clear = true;
+    rcc.auto_clear_after_cb = true;
+    rcc.dma_desc_num = 6;
+    rcc.dma_frame_num = 240;
+    if (i2s_new_channel(&rcc, NULL, &rx) != ESP_OK) {
+        printf("AUDIO: I2S RX busy\n");
+    }
+    i2s_std_config_t rsc = {
+        .clk_cfg = {
+            .sample_rate_hz = SAMPLE_RATE,
+            .clk_src = I2S_CLK_SRC_DEFAULT,
+            .mclk_multiple = I2S_MCLK_MULTIPLE_256,
+        },
+        .slot_cfg = {
+            .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
+            .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
+            .slot_mode = I2S_SLOT_MODE_STEREO, /* codec sends stereo, we pick left channel */
+            .slot_mask = I2S_STD_SLOT_LEFT,
+            .ws_width = I2S_DATA_BIT_WIDTH_16BIT,
+            .ws_pol = false,
+            .bit_shift = true,
+        },
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,
+            .bclk = I2S_GPIO_UNUSED,
+            .ws = I2S_GPIO_UNUSED,
+            .dout = I2S_GPIO_UNUSED,
+            .din = PIN_DIN,
+            .invert_flags = { .mclk_inv=false, .bclk_inv=false, .ws_inv=false },
+        },
+    };
+    if (rx) i2s_channel_init_std_mode(rx, &rsc);
+    if (rx) i2s_channel_enable(rx);
 
     /* Queue + output task */
     audio_queue = xQueueCreate(AUDIO_QUEUE_ITEMS, sizeof(audio_chunk_t));
@@ -258,4 +304,102 @@ void sys_audio_stop(void)
         if (ch.data) free(ch.data);
     }
     xEventGroupSetBits(audio_events, AUDIO_EVT_DONE);
+}
+
+/* ---- Recording task ---- */
+static void audio_record_task(void *arg)
+{
+    int16_t chunk[REC_CHUNK_SAMPLES * 2]; /* stereo input buffer */
+    printf("REC: task start max=%d samples\n", rec_max_samples);
+    while (rec_running && rec_samples < rec_max_samples) {
+        size_t got = 0;
+        esp_err_t r = i2s_channel_read(rx, chunk,
+            sizeof(chunk), &got, pdMS_TO_TICKS(1000));
+        if (r == ESP_OK && got > 0) {
+            int stereo_samples = got / 4; /* 2ch * 2bytes */
+            int to_copy = stereo_samples;
+            if (rec_samples + to_copy > rec_max_samples)
+                to_copy = rec_max_samples - rec_samples;
+            /* Extract left channel only (mono) */
+            for (int i = 0; i < to_copy; i++)
+                rec_buf[rec_samples + i] = chunk[i * 2];
+            rec_samples += to_copy;
+        }
+    }
+    printf("REC: task done samples=%d\n", rec_samples);
+    vTaskDelete(NULL);
+}
+
+bool sys_audio_record_start(int max_duration_ms)
+{
+    if (!rx || rec_running) return false;
+
+    rec_max_samples = max_duration_ms * SAMPLE_RATE / 1000;
+    int buf_bytes = rec_max_samples * 2; /* mono 16-bit */
+    rec_buf = heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!rec_buf) rec_buf = malloc(buf_bytes);
+    if (!rec_buf) { printf("REC: no mem\n"); return false; }
+
+    rec_samples = 0;
+    rec_running = true;
+    xTaskCreate(audio_record_task, "audio_rec", 4096, NULL, 4, &rec_task_handle);
+    printf("REC: started max=%dms buf=%d\n", max_duration_ms, buf_bytes);
+    return true;
+}
+
+uint8_t *sys_audio_record_stop(int *out_wav_len)
+{
+    if (!rec_running) return NULL;
+    rec_running = false;
+
+    /* Wait for task to finish (max 500ms) */
+    int wait = 0;
+    while (rec_task_handle && wait < 500) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+        wait += 10;
+    }
+    rec_task_handle = NULL;
+
+    int pcm_bytes = rec_samples * 2;
+    int wav_len = pcm_bytes + 44;
+    uint8_t *wav = malloc(wav_len);
+    if (!wav) { free(rec_buf); rec_buf = NULL; return NULL; }
+
+    /* Write WAV header */
+    int offset = 0;
+    memcpy(wav + offset, "RIFF", 4); offset += 4;
+    int file_size = wav_len - 8;
+    memcpy(wav + offset, &file_size, 4); offset += 4;
+    memcpy(wav + offset, "WAVE", 4); offset += 4;
+    memcpy(wav + offset, "fmt ", 4); offset += 4;
+    int fmt_size = 16;
+    memcpy(wav + offset, &fmt_size, 4); offset += 4;
+    short audio_fmt = 1; /* PCM */
+    memcpy(wav + offset, &audio_fmt, 2); offset += 2;
+    short channels = 1;
+    memcpy(wav + offset, &channels, 2); offset += 2;
+    int sr = SAMPLE_RATE;
+    memcpy(wav + offset, &sr, 4); offset += 4;
+    int byte_rate = SAMPLE_RATE * 2; /* mono 16-bit */
+    memcpy(wav + offset, &byte_rate, 4); offset += 4;
+    short block_align = 2;
+    memcpy(wav + offset, &block_align, 2); offset += 2;
+    short bits = 16;
+    memcpy(wav + offset, &bits, 2); offset += 2;
+    memcpy(wav + offset, "data", 4); offset += 4;
+    memcpy(wav + offset, &pcm_bytes, 4); offset += 4;
+    /* Copy PCM data */
+    memcpy(wav + offset, rec_buf, pcm_bytes);
+    offset += pcm_bytes;
+
+    free(rec_buf);
+    rec_buf = NULL;
+    *out_wav_len = wav_len;
+    printf("REC: stopped wav=%d pcm=%d samples=%d\n", wav_len, pcm_bytes, rec_samples);
+    return wav;
+}
+
+bool sys_audio_is_recording(void)
+{
+    return rec_running;
 }

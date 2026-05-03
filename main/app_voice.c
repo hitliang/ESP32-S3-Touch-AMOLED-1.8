@@ -11,6 +11,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_heap_caps.h"
+#include "esp_random.h"
 #include "tts_test_wav.h"
 #include "tts_test_short_wav.h"
 #include <string.h>
@@ -67,7 +68,8 @@ static esp_err_t hevt(esp_http_client_event_t *e)
     return ESP_OK;
 }
 
-static esp_err_t http_post(const char *url, const char *body,
+static esp_err_t http_post(const char *url, const char *body, int body_len,
+                            const char *ct,
                             const char *h1, const char *v1,
                             const char *h2, const char *v2,
                             uint8_t *buf, int max, int *olen, int *osta,
@@ -84,13 +86,13 @@ static esp_err_t http_post(const char *url, const char *body,
     };
     esp_http_client_handle_t cli = esp_http_client_init(&cfg);
     esp_http_client_set_method(cli, HTTP_METHOD_POST);
-    esp_http_client_set_header(cli, "Content-Type", "application/json");
+    esp_http_client_set_header(cli, "Content-Type", ct);
     esp_http_client_set_header(cli, "Accept", "application/json");
     esp_http_client_set_header(cli, "User-Agent", "ESP32-S3");
     if (h1) esp_http_client_set_header(cli, h1, v1);
     if (h2) esp_http_client_set_header(cli, h2, v2);
-    esp_http_client_set_post_field(cli, body, strlen(body));
-    ESP_LOGI(TAG, "HTTP POST %s body_len=%d", url, (int)strlen(body));
+    esp_http_client_set_post_field(cli, body, body_len);
+    ESP_LOGI(TAG, "HTTP POST %s body_len=%d", url, body_len);
     esp_err_t err = esp_http_client_perform(cli);
     esp_http_client_cleanup(cli);
     *olen = ctx.len; *osta = ctx.status;
@@ -193,7 +195,8 @@ static char *llm_chat(const char *question)
         }
         int len, status;
         http_post("https://api.deepseek.com/v1/chat/completions",
-                  body, "Authorization", "Bearer " DEEPSEEK_API_KEY, NULL, NULL,
+                  body, (int)strlen(body), "application/json",
+                  "Authorization", "Bearer " DEEPSEEK_API_KEY, NULL, NULL,
                   buf, 16384, &len, &status, 8000);
         ESP_LOGI(TAG, "LLM: s=%d l=%d", status, len);
         if (status == 200 && len > 0) {
@@ -249,6 +252,57 @@ static int b64_decode(const char *in, uint8_t *out, int max)
     return len;
 }
 
+/* ---- STT: speech-to-text via multipart/form-data POST ---- */
+static char *stt_transcribe(const uint8_t *wav, int wav_len)
+{
+    ESP_LOGI(TAG, "STT start wav=%d", wav_len);
+    const char *boundary = "ESP32BoundaryXYZ";
+    const char *fd1 = "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n";
+    const char *fd2 = "Content-Disposition: form-data; name=\"model\"\r\n\r\nwhisper-1";
+
+    int body_len = 0;
+    body_len += 2 + strlen(boundary) + 2;                     /* --boundary\r\n */
+    body_len += strlen(fd1);                                   /* file header */
+    body_len += wav_len;                                       /* WAV data */
+    body_len += 2 + 2 + strlen(boundary) + 2;                 /* \r\n--boundary\r\n */
+    body_len += strlen(fd2);                                   /* model field */
+    body_len += 2 + 2 + strlen(boundary) + 2 + 2;             /* \r\n--boundary--\r\n */
+
+    char *body = malloc(body_len + 1);
+    if (!body) { ESP_LOGE(TAG, "STT no mem for body"); return NULL; }
+    char *p = body;
+    p += sprintf(p, "--%s\r\n", boundary);
+    p += sprintf(p, "%s", fd1);
+    memcpy(p, wav, wav_len); p += wav_len;
+    p += sprintf(p, "\r\n--%s\r\n", boundary);
+    p += sprintf(p, "%s", fd2);
+    p += sprintf(p, "\r\n--%s--\r\n", boundary);
+
+    uint8_t *buf = malloc(32768);
+    if (!buf) { free(body); return NULL; }
+    int len, status;
+    esp_err_t err = http_post(STT_API_URL, body, body_len,
+        "multipart/form-data; boundary=ESP32BoundaryXYZ",
+        "Authorization", "Bearer " STT_API_KEY, NULL, NULL,
+        buf, 32768, &len, &status, 30000);
+    free(body);
+
+    char *text = NULL;
+    if (err == ESP_OK && status == 200 && len > 0) {
+        cJSON *root = cJSON_Parse((char*)buf);
+        if (root) {
+            cJSON *j = cJSON_GetObjectItem(root, "text");
+            if (j && j->valuestring && strlen(j->valuestring) > 0)
+                text = strdup(j->valuestring);
+            cJSON_Delete(root);
+        }
+    }
+    free(buf);
+    ESP_LOGI(TAG, "STT: s=%d text=%s", status, text ? text : "(null)");
+    return text;
+}
+
+/* ---- TTS ---- */
 static bool tts_play(const char *text)
 {
     ESP_LOGI(TAG, "T0 TTS start heap=%lu psram=%lu",
@@ -280,7 +334,8 @@ static bool tts_play(const char *text)
         ESP_LOGI(TAG, "T1.5 heap=%lu", (unsigned long)esp_get_free_heap_size());
         int len, status;
         esp_err_t err = http_post("https://api.xiaomimimo.com/v1/chat/completions",
-                  body, "Authorization", "Bearer " MIMO_API_KEY, NULL, NULL,
+                  body, (int)strlen(body), "application/json",
+                  "Authorization", "Bearer " MIMO_API_KEY, NULL, NULL,
                   buf, 2097152, &len, &status, 120000);
         ESP_LOGI(TAG, "T2 TTS HTTP err=%d s=%d l=%d", err, status, len);
         if (err != ESP_OK) {
@@ -339,6 +394,28 @@ static void add_msg(const char *pfx, const char *txt, uint32_t color)
     lv_obj_scroll_to_y(conv_area, conv_y-180, LV_ANIM_ON);
 }
 
+/* ---- Mic button state (forward decl — used by ask_result_cb) ---- */
+enum { MIC_IDLE, MIC_RECORDING, MIC_PROCESSING };
+static volatile int mic_state = MIC_IDLE;
+static lv_obj_t *mic_btn, *mic_lbl;
+static void update_mic_btn(void)
+{
+    switch (mic_state) {
+    case MIC_IDLE:
+        lv_label_set_text(mic_lbl, "Tap to Talk");
+        lv_obj_set_style_bg_color(mic_btn, lv_color_hex(0x3366cc), 0);
+        break;
+    case MIC_RECORDING:
+        lv_label_set_text(mic_lbl, "Recording... Tap to Stop");
+        lv_obj_set_style_bg_color(mic_btn, lv_color_hex(0xcc3333), 0);
+        break;
+    case MIC_PROCESSING:
+        lv_label_set_text(mic_lbl, "Processing...");
+        lv_obj_set_style_bg_color(mic_btn, lv_color_hex(0x888833), 0);
+        break;
+    }
+}
+
 static void ask_bg_task(void *arg)
 {
     char *q = (char*)arg;
@@ -380,6 +457,10 @@ static void ask_result_cb(lv_timer_t *t)
     ask_state=0;
     lv_label_set_text(status_lbl, "Ready");
     lv_obj_set_style_text_color(status_lbl, lv_color_hex(0x888888), 0);
+    if (mic_state != MIC_IDLE) {
+        mic_state = MIC_IDLE;
+        update_mic_btn();
+    }
 }
 
 static void ask(const char *q)
@@ -410,86 +491,113 @@ static void ask(const char *q)
     lv_timer_create(ask_result_cb, 300, NULL);
 }
 
-static void on_q1(lv_event_t *e) { ESP_LOGI(TAG, "BTN1 clicked"); ask("Hi, who are you?"); }
-static void on_q2(lv_event_t *e) { ESP_LOGI(TAG, "BTN2 clicked"); ask("Tell me a short story"); }
-static void tts_raw_tls_task(void *arg)
+/* Voice background task: STT → LLM → TTS */
+static void voice_ask_bg_task(void *arg)
 {
-    const char *body = "{\"model\":\"mimo-v2-tts\",\"messages\":["
-        "{\"role\":\"user\",\"content\":\"hi\"},"
-        "{\"role\":\"assistant\",\"content\":\"hello\"}"
-        "],\"audio\":{\"format\":\"wav\",\"voice\":\"mimo_default\"}}";
-    int body_len = strlen(body);
+    uint8_t *wav = ((uint8_t**)arg)[0];
+    int wav_len = (int)((uint8_t**)arg)[1];
+    free(arg);
 
-    for (int attempt = 0; attempt < 3; attempt++) {
-        ESP_LOGI(TAG, "RAW attempt %d heap=%lu", attempt, (unsigned long)esp_get_free_heap_size());
-        esp_tls_t *tls = esp_tls_init();
-        if (!tls) { ESP_LOGE(TAG, "RAW: esp_tls_init fail"); break; }
+    ESP_LOGI(TAG, "VV1 voice task, wifi=%d wav=%d", sys_wifi_is_connected(), wav_len);
 
-        esp_tls_cfg_t cfg = {
-            .crt_bundle_attach = esp_crt_bundle_attach,
-            .timeout_ms = 30000,
-        };
-        int ret = esp_tls_conn_new_sync("api.xiaomimimo.com", strlen("api.xiaomimimo.com"), 443, &cfg, tls);
-        if (ret < 0) { ESP_LOGE(TAG, "RAW: conn fail ret=%d", ret); esp_tls_conn_destroy(tls); vTaskDelay(pdMS_TO_TICKS(2000)); continue; }
+    char *q = stt_transcribe(wav, wav_len);
+    free(wav);
 
-        char *hdr = malloc(512);
-        if (!hdr) { esp_tls_conn_destroy(tls); break; }
-        int hdr_len = snprintf(hdr, 512,
-            "POST /v1/chat/completions HTTP/1.1\r\n"
-            "Host: api.xiaomimimo.com\r\n"
-            "Content-Type: application/json\r\n"
-            "Authorization: Bearer " MIMO_API_KEY "\r\n"
-            "Content-Length: %d\r\n"
-            "Connection: close\r\n"
-            "\r\n", body_len);
-        esp_tls_conn_write(tls, hdr, hdr_len);
-        esp_tls_conn_write(tls, body, body_len);
-        free(hdr);
-
-        int rbuf_sz = 131072;
-        char *rbuf = malloc(rbuf_sz);
-        if (!rbuf) { esp_tls_conn_destroy(tls); break; }
-        int total = 0;
-        while (total < rbuf_sz - 1) {
-            int r = esp_tls_conn_read(tls, rbuf + total, rbuf_sz - 1 - total);
-            if (r <= 0) break;
-            total += r;
-            rbuf[total] = 0;
-        }
-        esp_tls_conn_destroy(tls);
-
-        ESP_LOGI(TAG, "RAW: attempt %d done, got %d bytes", attempt, total);
-        if (total > 100 && strstr(rbuf, "200 OK")) {
-            ESP_LOGI(TAG, "RAW: SUCCESS on attempt %d", attempt);
-            /* Find JSON body start */
-            char *json_start = strstr(rbuf, "\r\n\r\n");
-            if (json_start) {
-                json_start += 4;
-                ESP_LOGI(TAG, "RAW JSON: %.500s", json_start);
-            }
-            free(rbuf);
-            break;
-        } else {
-            ESP_LOGW(TAG, "RAW: attempt %d failed, got %d bytes", attempt, total);
-            free(rbuf);
-            vTaskDelay(pdMS_TO_TICKS(2000));
-        }
+    if (!q) {
+        ESP_LOGI(TAG, "VVF STT fail");
+        ask_state = -1;
+        voice_task_handle = NULL;
+        vTaskDelete(NULL);
+        return;
     }
-    ESP_LOGI(TAG, "RAW TLS test done heap=%lu", (unsigned long)esp_get_free_heap_size());
+
+    ESP_LOGI(TAG, "VV2 STT ok: %s", q);
+    add_msg("You: ", q, 0x4488cc);
+    ask_result_text = NULL;
+    ask_state = 0;
+
+    char *reply = llm_chat(q);
+    if (reply) {
+        ESP_LOGI(TAG, "VV3 LLM ok len=%d", (int)strlen(reply));
+        history_add(q, reply);
+        ask_result_text = reply;
+        ask_state = 2;
+        char *tts_text = strdup(reply);
+        if (tts_text) {
+            sys_audio_init();
+            tts_play(tts_text);
+            free(tts_text);
+        }
+    } else {
+        ESP_LOGI(TAG, "VVF LLM fail");
+        ask_state = -1;
+    }
+    free(q);
+    ESP_LOGI(TAG, "VVE voice task end");
+    mic_state = MIC_IDLE;
+    voice_task_handle = NULL;
     vTaskDelete(NULL);
 }
 
-static void on_q3(lv_event_t *e) {
-    ESP_LOGI(TAG, "BTN3 - embedded WAV test");
-    sys_audio_init();
-    sys_audio_play_wav(tts_test_short_wav, tts_test_short_wav_len);
-    ESP_LOGI(TAG, "BTN3 - play done");
+static void on_mic_btn(lv_event_t *e)
+{
+    ESP_LOGI(TAG, "Mic btn state=%d", mic_state);
+
+    if (mic_state == MIC_IDLE) {
+        if (ask_state || voice_task_handle) {
+            ESP_LOGI(TAG, "busy, skip");
+            return;
+        }
+        sys_audio_init();
+        if (!sys_audio_record_start(30000)) {
+            ESP_LOGE(TAG, "record start fail");
+            return;
+        }
+        mic_state = MIC_RECORDING;
+        update_mic_btn();
+        lv_label_set_text(status_lbl, "Recording...");
+        lv_obj_set_style_text_color(status_lbl, lv_color_hex(0xcc4444), 0);
+
+    } else if (mic_state == MIC_RECORDING) {
+        int wav_len = 0;
+        uint8_t *wav = sys_audio_record_stop(&wav_len);
+        mic_state = MIC_PROCESSING;
+        update_mic_btn();
+        lv_label_set_text(status_lbl, "Processing...");
+        lv_obj_set_style_text_color(status_lbl, lv_color_hex(0xccaa44), 0);
+
+        if (!wav || wav_len < 100) {
+            ESP_LOGW(TAG, "recording too short: %d", wav_len);
+            if (wav) free(wav);
+            mic_state = MIC_IDLE;
+            update_mic_btn();
+            lv_label_set_text(status_lbl, "Ready");
+            lv_obj_set_style_text_color(status_lbl, lv_color_hex(0x888888), 0);
+            return;
+        }
+
+        /* Pack wav pointer + length into arg for the background task */
+        uint8_t **arg = malloc(2 * sizeof(void*));
+        arg[0] = wav;
+        arg[1] = (uint8_t*)(intptr_t)wav_len;
+        ask_state = 1;
+        voice_task_handle = xTaskCreateStatic(voice_ask_bg_task, "voice_bg",
+            VOICE_STACK_WORDS, arg, 3, voice_task_stack, &voice_task_tcb);
+        if (!voice_task_handle) {
+            free(wav);
+            free(arg);
+            mic_state = MIC_IDLE;
+            update_mic_btn();
+            ask_state = -1;
+        }
+        lv_timer_create(ask_result_cb, 300, NULL);
+    }
 }
 
 static void create(lv_obj_t *parent)
 {
     ESP_LOGI(TAG, "Voice AI app created");
-    conv_y=5; history_load_from_sd();
+    conv_y = 5; history_load_from_sd();
     root = lv_obj_create(parent);
     lv_obj_set_size(root, 340, 380);
     lv_obj_set_style_bg_color(root, lv_color_black(), 0);
@@ -509,7 +617,7 @@ static void create(lv_obj_t *parent)
     lv_obj_align(status_lbl, LV_ALIGN_TOP_RIGHT, -10, 8);
 
     conv_area = lv_obj_create(root);
-    lv_obj_set_size(conv_area, 330, 200);
+    lv_obj_set_size(conv_area, 330, 180);
     lv_obj_align(conv_area, LV_ALIGN_TOP_MID, 0, 25);
     lv_obj_set_style_bg_color(conv_area, lv_color_hex(0x0a0a18), 0);
     lv_obj_set_style_border_width(conv_area, 0, 0);
@@ -517,14 +625,20 @@ static void create(lv_obj_t *parent)
     lv_obj_set_scroll_dir(conv_area, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(conv_area, LV_SCROLLBAR_MODE_OFF);
 
-    static const char *qs[]={"Who r u?","A story","1+1=?"};
-    static lv_event_cb_t cbs[]={on_q1,on_q2,on_q3};
-    for(int i=0;i<3;i++){
-        lv_obj_t *btn=lv_btn_create(root); lv_obj_set_size(btn,105,36);
-        lv_obj_align(btn, LV_ALIGN_BOTTOM_LEFT, 8+i*112, -8);
-        lv_obj_t *bl=lv_label_create(btn); lv_label_set_text(bl,qs[i]); lv_obj_center(bl);
-        lv_obj_add_event_cb(btn, cbs[i], LV_EVENT_CLICKED, NULL);
-    }
+    /* Large mic button */
+    mic_btn = lv_btn_create(root);
+    lv_obj_set_size(mic_btn, 280, 100);
+    lv_obj_align(mic_btn, LV_ALIGN_BOTTOM_MID, 0, -20);
+    lv_obj_set_style_radius(mic_btn, 50, 0);
+    lv_obj_add_event_cb(mic_btn, on_mic_btn, LV_EVENT_CLICKED, NULL);
+
+    mic_lbl = lv_label_create(mic_btn);
+    lv_obj_set_style_text_font(mic_lbl, &lv_font_simsun_16_cjk, 0);
+    lv_obj_set_style_text_color(mic_lbl, lv_color_white(), 0);
+    lv_obj_center(mic_lbl);
+
+    mic_state = MIC_IDLE;
+    update_mic_btn();
 }
 
 static void destroy(void)
