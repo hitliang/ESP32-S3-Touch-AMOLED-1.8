@@ -4,6 +4,10 @@
 #include "driver/gpio.h"
 #include "es8311.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/event_groups.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -17,9 +21,50 @@ static const char *TAG = "sys_audio";
 #define SAMPLE_RATE 24000
 #define MCLK_MULT   256
 
+/* Queue-based streaming: same architecture as xiaozhi */
+#define AUDIO_QUEUE_ITEMS    32
+#define AUDIO_CHUNK_SAMPLES  480   /* 480 samples = 10ms @24kHz stereo */
+
+typedef struct {
+    int16_t *data;   /* heap-allocated, freed by output task */
+    int      bytes;  /* data size in bytes */
+    bool     last;   /* marks end of a playback */
+} audio_chunk_t;
+
 static i2s_chan_handle_t tx = NULL;
 static bool inited = false;
 
+static QueueHandle_t audio_queue = NULL;
+static TaskHandle_t  audio_task_handle = NULL;
+static EventGroupHandle_t audio_events = NULL;
+#define AUDIO_EVT_DONE  BIT0
+
+/* ---- Output task: reads chunks from queue, writes to I2S ---- */
+static void audio_output_task(void *arg)
+{
+    audio_chunk_t chunk;
+    while (1) {
+        if (xQueueReceive(audio_queue, &chunk, portMAX_DELAY) == pdTRUE) {
+            if (chunk.data && chunk.bytes > 0) {
+                int sent = 0;
+                while (sent < chunk.bytes) {
+                    size_t w = 0;
+                    esp_err_t r = i2s_channel_write(tx,
+                        (uint8_t*)chunk.data + sent,
+                        chunk.bytes - sent, &w, pdMS_TO_TICKS(5000));
+                    sent += w;
+                    if (r != ESP_OK || w == 0) break;
+                }
+                free(chunk.data);
+            }
+            if (chunk.last) {
+                xEventGroupSetBits(audio_events, AUDIO_EVT_DONE);
+            }
+        }
+    }
+}
+
+/* ---- Init ---- */
 void sys_audio_init(void)
 {
     if (inited) return;
@@ -40,6 +85,7 @@ void sys_audio_init(void)
     es8311_voice_volume_set(es, 80, NULL);
     es8311_microphone_config(es, false);
 
+    /* I2S channel — config aligned with xiaozhi */
     i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     cc.auto_clear = true;
     cc.dma_desc_num = 6;
@@ -71,10 +117,28 @@ void sys_audio_init(void)
     if (tx) i2s_channel_init_std_mode(tx, &sc);
     if (tx) i2s_channel_enable(tx);
 
+    /* Queue + output task */
+    audio_queue = xQueueCreate(AUDIO_QUEUE_ITEMS, sizeof(audio_chunk_t));
+    audio_events = xEventGroupCreate();
+    xTaskCreate(audio_output_task, "audio_out", 4096, NULL, 5, &audio_task_handle);
+
     inited = true;
     printf("AUDIO: ready\n");
 }
 
+/* ---- Helper: enqueue a chunk (takes ownership of data pointer) ---- */
+static bool enqueue_chunk(int16_t *data, int bytes, bool last)
+{
+    audio_chunk_t ch = { .data = data, .bytes = bytes, .last = last };
+    if (xQueueSend(audio_queue, &ch, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        printf("AUDIO: queue full!\n");
+        free(data);
+        return false;
+    }
+    return true;
+}
+
+/* ---- Play WAV ---- */
 void sys_audio_play_wav(const uint8_t *data, int len)
 {
     if (!tx || len < 44) return;
@@ -96,51 +160,94 @@ void sys_audio_play_wav(const uint8_t *data, int len)
     const uint8_t *pcm = data + off;
     printf("AUDIO: %dHz %dbit %dch pcm=%d\n", wav_sr, bits, channels, pcm_len);
 
-    int total_written = 0;
-    if (channels == 1 && bits == 16) {
-        /* Mono → stereo */
-        int n = pcm_len / 2;
-        int16_t *buf = malloc(n * 4);
-        if (!buf) { printf("AUDIO: stereo buf OOM\n"); return; }
-        const int16_t *src = (const int16_t*)pcm;
-        for (int i = 0; i < n; i++) { buf[i*2] = src[i]; buf[i*2+1] = src[i]; }
-        int stereo_bytes = n * 4;
-        /* Write in chunks — DMA buffer is small */
-        while (total_written < stereo_bytes) {
-            size_t w = 0;
-            esp_err_t r = i2s_channel_write(tx, (uint8_t*)buf + total_written,
-                            stereo_bytes - total_written, &w, pdMS_TO_TICKS(10000));
-            total_written += w;
-            if (r != ESP_OK || w == 0) break;
-        }
-        free(buf);
-    } else {
-        while (total_written < pcm_len) {
-            size_t w = 0;
-            esp_err_t r = i2s_channel_write(tx, pcm + total_written,
-                            pcm_len - total_written, &w, pdMS_TO_TICKS(10000));
-            total_written += w;
-            if (r != ESP_OK || w == 0) break;
-        }
-    }
-    printf("AUDIO: total_written=%d\n", total_written);
+    /* Convert to stereo 16-bit and enqueue in chunks */
+    int samples;       /* total mono samples */
+    const int16_t *src;
 
-    /* Wait for DMA to fully drain — block until all data is transmitted.
-       i2s_channel_write blocks until data is copied to DMA ring buffer,
-       but DMA still needs time to clock it out to the codec. */
-    int play_ms = (wav_sr > 0) ? (pcm_len / (channels * bits / 8) * 1000 / wav_sr) + 1500 : 3000;
-    printf("AUDIO: wait %dms\n", play_ms);
-    vTaskDelay(pdMS_TO_TICKS(play_ms));
+    if (channels == 1 && bits == 16) {
+        samples = pcm_len / 2;
+        src = (const int16_t*)pcm;
+    } else if (channels == 2 && bits == 16) {
+        /* Already stereo — enqueue directly in chunks */
+        int stereo_bytes = pcm_len;
+        int chunk_bytes = AUDIO_CHUNK_SAMPLES * 2 * 2; /* samples * ch * bytes */
+        int pos = 0;
+        while (pos < stereo_bytes) {
+            int this_bytes = stereo_bytes - pos;
+            if (this_bytes > chunk_bytes) this_bytes = chunk_bytes;
+            bool last = (pos + this_bytes >= stereo_bytes);
+            int16_t *buf = malloc(this_bytes);
+            if (!buf) break;
+            memcpy(buf, pcm + pos, this_bytes);
+            if (!enqueue_chunk(buf, this_bytes, last)) break;
+            pos += this_bytes;
+        }
+        printf("AUDIO: enqueued stereo %d bytes\n", pos);
+        /* Wait for playback to finish */
+        xEventGroupWaitBits(audio_events, AUDIO_EVT_DONE, pdTRUE, pdFALSE, pdMS_TO_TICKS(30000));
+        printf("AUDIO: done\n");
+        return;
+    } else {
+        printf("AUDIO: unsupported format\n");
+        return;
+    }
+
+    /* Mono → stereo, enqueue in chunks of AUDIO_CHUNK_SAMPLES mono samples */
+    int pos = 0;
+    while (pos < samples) {
+        int chunk_samples = samples - pos;
+        if (chunk_samples > AUDIO_CHUNK_SAMPLES) chunk_samples = AUDIO_CHUNK_SAMPLES;
+        bool last = (pos + chunk_samples >= samples);
+        int16_t *buf = malloc(chunk_samples * 4); /* stereo: *2 channels *2 bytes */
+        if (!buf) { printf("AUDIO: OOM at %d\n", pos); break; }
+        for (int i = 0; i < chunk_samples; i++) {
+            buf[i*2]   = src[pos + i];
+            buf[i*2+1] = src[pos + i];
+        }
+        if (!enqueue_chunk(buf, chunk_samples * 4, last)) break;
+        pos += chunk_samples;
+    }
+    printf("AUDIO: enqueued %d/%d samples\n", pos, samples);
+
+    /* Block until playback complete */
+    xEventGroupWaitBits(audio_events, AUDIO_EVT_DONE, pdTRUE, pdFALSE, pdMS_TO_TICKS(30000));
+    printf("AUDIO: done\n");
 }
 
+/* ---- Play raw stereo PCM ---- */
 void sys_audio_play_pcm(const int16_t *stereo_data, int sample_count)
 {
     if (!tx) { printf("AUDIO: pcm not ready\n"); return; }
-    size_t w;
-    i2s_channel_write(tx, stereo_data, sample_count * 4, &w, pdMS_TO_TICKS(10000));
-    printf("AUDIO: pcm wrote %d\n", (int)w);
-    vTaskDelay(pdMS_TO_TICKS(200));
+
+    int total_bytes = sample_count * 4;
+    int chunk_bytes = AUDIO_CHUNK_SAMPLES * 4;
+    int pos = 0;
+    while (pos < total_bytes) {
+        int this_bytes = total_bytes - pos;
+        if (this_bytes > chunk_bytes) this_bytes = chunk_bytes;
+        bool last = (pos + this_bytes >= total_bytes);
+        int16_t *buf = malloc(this_bytes);
+        if (!buf) break;
+        memcpy(buf, (uint8_t*)stereo_data + pos, this_bytes);
+        if (!enqueue_chunk(buf, this_bytes, last)) break;
+        pos += this_bytes;
+    }
+
+    xEventGroupWaitBits(audio_events, AUDIO_EVT_DONE, pdTRUE, pdFALSE, pdMS_TO_TICKS(30000));
+    printf("AUDIO: pcm done\n");
 }
 
-bool sys_audio_is_playing(void) { return false; }
-void sys_audio_stop(void) {}
+bool sys_audio_is_playing(void)
+{
+    return uxQueueMessagesWaiting(audio_queue) > 0;
+}
+
+void sys_audio_stop(void)
+{
+    /* Flush queue */
+    audio_chunk_t ch;
+    while (xQueueReceive(audio_queue, &ch, 0) == pdTRUE) {
+        if (ch.data) free(ch.data);
+    }
+    xEventGroupSetBits(audio_events, AUDIO_EVT_DONE);
+}
