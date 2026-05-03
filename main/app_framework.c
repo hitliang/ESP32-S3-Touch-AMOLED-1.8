@@ -11,6 +11,9 @@
 #include "sys_touch.h"
 #include "esp_log.h"
 
+/* Xiaozhi app (C source, declare extern) */
+extern const app_entry_t app_xiaozhi;
+
 static const char *TAG = "app_fw";
 
 /* Dummy app for not-yet-implemented apps */
@@ -67,6 +70,7 @@ void app_framework_init(void)
     app_registry[idx++] = APP(attitude);
     app_registry[idx++] = APP(weather);
     app_registry[idx++] = APP(voice);
+    app_registry[idx++] = APP(xiaozhi);
     app_registry[idx++] = PLACEHOLDER(ph_music);
     app_registry[idx++] = APP(snake);
     app_registry[idx++] = PLACEHOLDER(ph_pedometer);

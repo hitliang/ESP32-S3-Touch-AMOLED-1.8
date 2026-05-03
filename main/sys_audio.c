@@ -403,3 +403,49 @@ bool sys_audio_is_recording(void)
 {
     return rec_running;
 }
+
+int sys_audio_read_mic(int16_t *buf, int max_samples)
+{
+    if (!rx) return 0;
+    size_t got = 0;
+    esp_err_t r = i2s_channel_read(rx, buf, max_samples * 4, &got, pdMS_TO_TICKS(100));
+    if (r != ESP_OK || got == 0) return 0;
+    return (int)(got / 4); /* stereo → sample count per channel */
+}
+
+bool sys_audio_play_mono(const int16_t *mono, int samples, int src_sample_rate)
+{
+    if (!tx) return false;
+
+    /* Nearest-neighbor resampling to hardware sample rate */
+    int out_max = samples * SAMPLE_RATE / src_sample_rate + 1;
+    int16_t *resampled = malloc(out_max * sizeof(int16_t));
+    if (!resampled) return false;
+
+    int out_samples = 0;
+    for (int i = 0; i < out_max - 1; i++) {
+        int src_idx = (int)((int64_t)i * src_sample_rate / SAMPLE_RATE);
+        if (src_idx < samples)
+            resampled[out_samples++] = mono[src_idx];
+    }
+
+    /* Enqueue in stereo chunks */
+    int pos = 0;
+    while (pos < out_samples) {
+        int chunk = out_samples - pos;
+        if (chunk > AUDIO_CHUNK_SAMPLES) chunk = AUDIO_CHUNK_SAMPLES;
+        int16_t *stereo = malloc(chunk * 4);
+        if (!stereo) break;
+        for (int i = 0; i < chunk; i++) {
+            stereo[i * 2]     = resampled[pos + i];
+            stereo[i * 2 + 1] = resampled[pos + i];
+        }
+        if (!enqueue_chunk(stereo, chunk * 4, false)) {
+            free(stereo);
+            break;
+        }
+        pos += chunk;
+    }
+    free(resampled);
+    return pos > 0;
+}

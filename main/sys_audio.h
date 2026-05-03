@@ -17,6 +17,12 @@ bool sys_audio_record_start(int max_duration_ms);
 uint8_t *sys_audio_record_stop(int *out_wav_len);  /* returns malloc'd WAV buffer */
 bool sys_audio_is_recording(void);
 
+/* Streaming: read mic PCM (mono 16-bit, hardware sample rate). Returns samples. */
+int sys_audio_read_mic(int16_t *buf, int max_samples);
+
+/* Enqueue mono PCM for playback (auto-converts to stereo, resamples if needed) */
+bool sys_audio_play_mono(const int16_t *mono, int samples, int src_sample_rate);
+
 #ifdef __cplusplus
 }
 #endif
