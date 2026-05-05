@@ -159,14 +159,10 @@ class AgentEngine:
         """Process a user message and return the assistant's reply."""
         # Save user message
         self.memory.add("user", user_text)
-        await self.memory.maybe_summarize(self.llm)
 
-        # Build messages for LLM
+        # Build messages for LLM using four-tier memory
         current_time = datetime.now().strftime("%Y年%m月%d日 %H:%M")
-        system_content = f"{self.system_prompt}\n\n当前时间: {current_time}"
-
-        messages = [{"role": "system", "content": system_content}]
-        messages.extend(self.memory.get_messages_for_llm())
+        messages = self.memory.build_context(self.system_prompt, current_time)
 
         # ReAct loop
         for iteration in range(MAX_ITERATIONS):
@@ -203,6 +199,8 @@ class AgentEngine:
             # Text response
             if text:
                 self.memory.add("assistant", text)
+                # Run memory maintenance (summary + fact extraction + profile update)
+                await self.memory.maintenance(self.llm)
                 return text
 
             # Empty response

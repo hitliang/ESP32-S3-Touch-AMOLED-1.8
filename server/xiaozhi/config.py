@@ -9,7 +9,7 @@ class LLMConfig:
     api_key: str = ""
     base_url: str = "https://api.deepseek.com/v1"
     model: str = "deepseek-chat"
-    max_tokens: int = 4096
+    max_tokens: int = 131072
     temperature: float = 0.7
 
 
