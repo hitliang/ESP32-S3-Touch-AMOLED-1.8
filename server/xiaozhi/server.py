@@ -35,6 +35,47 @@ from .admin import AdminServer
 
 logger = logging.getLogger("xz.server")
 
+# ── Tool handlers ───────────────────────────────────────────────────
+import math as _math
+
+_SAFE_MATH = {
+    "sqrt": _math.sqrt, "pow": _math.pow,
+    "sin": _math.sin, "cos": _math.cos, "tan": _math.tan,
+    "pi": _math.pi, "e": _math.e,
+    "floor": _math.floor, "ceil": _math.ceil,
+    "log": _math.log, "log10": _math.log10, "log2": _math.log2,
+}
+_SAFE_BUILTINS = {"abs": abs, "round": round, "min": min, "max": max, "int": int, "float": float}
+_SAFE_NAMES = {**_SAFE_BUILTINS, **_SAFE_MATH}
+
+
+def _safe_eval(expr: str) -> str:
+    expr = expr.strip().replace("^", "**").replace("×", "*").replace("÷", "/").replace("（", "(").replace("）", ")")
+    allowed = set("0123456789.+-*/%() _abcdefghijklmnopqrstuvwxyz")
+    for ch in expr:
+        if ch.lower() not in allowed:
+            return f"不支持字符: {ch}"
+    try:
+        compiled = compile(expr, "<calc>", "eval")
+        for name in compiled.co_names:
+            if name not in _SAFE_NAMES:
+                return f"不支持的函数: {name}"
+        result = eval(compiled, {"__builtins__": {}}, _SAFE_NAMES)
+        if isinstance(result, float):
+            if abs(result - round(result)) < 1e-10:
+                return str(int(round(result)))
+            return f"{result:.6f}".rstrip("0").rstrip(".")
+        return str(result)
+    except ZeroDivisionError:
+        return "不能除以零"
+    except Exception as e:
+        return f"计算错误: {e}"
+
+
+async def _calc_handler(expression: str) -> str:
+    return f"计算结果: {_safe_eval(expression)}"
+
+
 # VAD settings
 VAD_ENERGY_THRESHOLD = 500       # RMS energy threshold for speech
 VAD_SILENCE_FRAMES = 8           # consecutive silent frames to end speech (8*60ms = 480ms)
@@ -88,8 +129,27 @@ class XiaozhiServer:
         self._sessions: dict[str, DeviceSession] = {}
 
     def _register_tools(self):
-        # Register built-in tools here
-        pass
+        # Calculator tool
+        self.tools.register(
+            {
+                "type": "function",
+                "function": {
+                    "name": "calculator",
+                    "description": "计算数学表达式。支持加减乘除、乘方、括号、以及sqrt/abs/round等函数。例如: '2+3*4', '(15+9)/3', 'sqrt(144)'。Reddy不会口算多位数时可以调用此工具。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "expression": {
+                                "type": "string",
+                                "description": "要计算的数学表达式，如 '3*17' 或 'sqrt(81)'",
+                            }
+                        },
+                        "required": ["expression"],
+                    },
+                },
+            },
+            _calc_handler,
+        )
 
     async def start(self):
         await self.memory.load_or_create()
