@@ -156,12 +156,14 @@ class ConversationMemory:
         )
 
     # ── Add messages ─────────────────────────────────────────────
-    def add(self, role: str, content: str):
+    async def add(self, role: str, content: str):
         tokens = estimate_tokens(content)
         self._messages.append((role, content, tokens))
         self._total_recent_tokens += tokens
         if role == "user":
             self._turn_count += 1
+        # Persist immediately so admin page sees it
+        await self._insert_message(role, content, tokens)
 
     # ── Build LLM context ────────────────────────────────────────
     def build_context(self, system_prompt: str, current_time: str) -> list[dict]:
@@ -444,6 +446,17 @@ class ConversationMemory:
         return None
 
     # ── Persistence ──────────────────────────────────────────────
+    async def _insert_message(self, role: str, content: str, tokens: int):
+        db = await self._get_db()
+        try:
+            await db.execute(
+                "INSERT INTO messages (role, content, token_count) VALUES (?, ?, ?)",
+                (role, content, tokens),
+            )
+            await db.commit()
+        finally:
+            await db.close()
+
     async def _persist_summary(self):
         db = await self._get_db()
         try:

@@ -158,7 +158,7 @@ class AgentEngine:
     async def process(self, user_text: str) -> str:
         """Process a user message and return the assistant's reply."""
         # Save user message
-        self.memory.add("user", user_text)
+        await self.memory.add("user", user_text)
 
         # Build messages for LLM using four-tier memory
         current_time = datetime.now().strftime("%Y年%m月%d日 %H:%M")
@@ -198,7 +198,7 @@ class AgentEngine:
 
             # Text response
             if text:
-                self.memory.add("assistant", text)
+                await self.memory.add("assistant", text)
                 # Run memory maintenance (summary + fact extraction + profile update)
                 await self.memory.maintenance(self.llm)
                 return text

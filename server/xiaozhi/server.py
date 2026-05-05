@@ -31,6 +31,7 @@ from .stt import AliyunSTT
 from .tts import TTSService
 from .agent import AgentEngine, LLMClient, ToolExecutor
 from .memory import ConversationMemory
+from .admin import AdminServer
 
 logger = logging.getLogger("xz.server")
 
@@ -92,6 +93,10 @@ class XiaozhiServer:
 
     async def start(self):
         await self.memory.load_or_create()
+
+        self._admin = AdminServer(self.config.memory.db_path, self.config.server.host, 7071)
+        admin_task = asyncio.create_task(self._admin.start())
+
         logger.info(f"Server starting on {self.config.server.host}:{self.config.server.port}")
         async with websockets.serve(
             self._handle_connection,
@@ -100,6 +105,8 @@ class XiaozhiServer:
             max_size=2 * 1024 * 1024,  # 2MB max message
         ):
             await asyncio.Future()  # run forever
+
+        admin_task.cancel()
 
     async def _handle_connection(self, ws: WebSocketServerProtocol):
         peer = ws.remote_address
