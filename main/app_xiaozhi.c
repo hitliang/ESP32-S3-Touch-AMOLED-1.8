@@ -1,8 +1,11 @@
 #include "app_framework.h"
 #include "sys_wifi.h"
 #include "sys_audio.h"
+
+/* Point to our custom server instead of official OTA */
+#define XZ_WS_URL "ws://59.110.161.101:7070"
+
 #include "xiaozhi_client.h"
-#include "secrets.h"
 #include "lvgl.h"
 #include "esp_log.h"
 #include "esp_system.h"

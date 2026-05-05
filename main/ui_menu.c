@@ -20,7 +20,6 @@ static const icon_def_t app_icons[] = {
     {LV_SYMBOL_SETTINGS,  0x666688},   /* Settings    */
     {LV_SYMBOL_GPS,       0x4488cc},   /* Attitude    */
     {LV_SYMBOL_HOME,      0x44aacc},   /* Weather     */
-    {LV_SYMBOL_AUDIO,     0xcc8844},   /* Voice AI    */
     {LV_SYMBOL_FILE,      0xcc4488},   /* Music       */
     {LV_SYMBOL_CHARGE,    0x88cc44},   /* Snake       */
     {LV_SYMBOL_LIST,      0xccaa44},   /* Pedometer   */
