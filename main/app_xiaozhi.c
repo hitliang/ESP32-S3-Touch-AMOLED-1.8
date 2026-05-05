@@ -166,7 +166,7 @@ static void on_mic_btn(lv_event_t *e)
         stream_handle = xTaskCreateStatic(mic_stream_task, "mic_strm",
             2048, NULL, 4, stream_stack, &stream_tcb);
 
-    } else if (mic_state == MIC_RECORDING) {
+    } else if (mic_state == MIC_RECORDING || mic_state == MIC_PROCESSING) {
         mic_state = MIC_IDLE;
         update_mic_btn();
         xz_client_stop_listening();
@@ -210,7 +210,7 @@ static void create(lv_obj_t *parent)
     lv_obj_set_scroll_dir(conv_area, LV_DIR_VER);
     lv_obj_set_scrollbar_mode(conv_area, LV_SCROLLBAR_MODE_OFF);
 
-    /* Large mic button */
+    /* Large mic button — tap to stop/resume */
     mic_btn = lv_btn_create(root);
     lv_obj_set_size(mic_btn, 280, 100);
     lv_obj_align(mic_btn, LV_ALIGN_BOTTOM_MID, 0, -20);
@@ -222,8 +222,30 @@ static void create(lv_obj_t *parent)
     lv_obj_set_style_text_color(mic_lbl, lv_color_white(), 0);
     lv_obj_center(mic_lbl);
 
-    mic_state = MIC_IDLE;
-    update_mic_btn();
+    /* Auto-connect on app start — no need to tap the button */
+    if (sys_wifi_is_connected()) {
+        sys_audio_init();
+        xz_config_t cfg = { .hardware_sample_rate = 24000 };
+        strncpy(cfg.ws_url, XZ_WS_URL, sizeof(cfg.ws_url) - 1);
+
+        xz_client_init(&cfg);
+        xz_client_set_callbacks(xz_state_handler, xz_audio_handler);
+        xz_client_start();
+        xz_running = true;
+        mic_state = MIC_PROCESSING;
+        update_mic_btn();
+        lv_label_set_text(status_lbl, "Connecting...");
+        lv_obj_set_style_text_color(status_lbl, lv_color_hex(0xccaa44), 0);
+
+        /* Start mic streaming task — starts pumping audio when connected */
+        stream_handle = xTaskCreateStatic(mic_stream_task, "mic_strm",
+            2048, NULL, 4, stream_stack, &stream_tcb);
+    } else {
+        mic_state = MIC_IDLE;
+        update_mic_btn();
+        lv_label_set_text(status_lbl, "No WiFi");
+        lv_obj_set_style_text_color(status_lbl, lv_color_hex(0xcc4444), 0);
+    }
 }
 
 static void destroy(void)
