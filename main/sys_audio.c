@@ -102,36 +102,30 @@ void sys_audio_init(void)
     es8311_voice_volume_set(es, 80, NULL);
     es8311_microphone_config(es, false);
 
-    /* I2S TX channel — playback only (RX disabled: GPIO10 not connected to ES8311 ADC) */
-    i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    cc.auto_clear = true;
-    cc.auto_clear_after_cb = true;
-    cc.dma_desc_num = 6;
-    cc.dma_frame_num = 240;
-    i2s_new_channel(&cc, &tx, NULL);
-    rx = NULL;
+    /* I2S full-duplex — RX confirmed working, must share with TX in one call */
+    i2s_chan_config_t cc = {
+        .id = I2S_NUM_0, .role = I2S_ROLE_MASTER,
+        .dma_desc_num = 6, .dma_frame_num = 240,
+        .auto_clear_after_cb = true, .auto_clear_before_cb = false, .intr_priority = 0,
+    };
+    ESP_ERROR_CHECK(i2s_new_channel(&cc, &tx, &rx));
 
     i2s_std_config_t sc = {
-        .clk_cfg = {
-            .sample_rate_hz = SAMPLE_RATE,
-            .clk_src = I2S_CLK_SRC_DEFAULT,
-            .mclk_multiple = I2S_MCLK_MULTIPLE_256,
-        },
-        .slot_cfg = {
-            .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
-            .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
-            .slot_mode = I2S_SLOT_MODE_STEREO,
-            .slot_mask = I2S_STD_SLOT_BOTH,
-            .ws_width = I2S_DATA_BIT_WIDTH_16BIT,
-            .ws_pol = false,
-            .bit_shift = true,
-        },
-        .gpio_cfg = {
-            .mclk = PIN_MCK, .bclk = PIN_BCK, .ws = PIN_WS, .dout = PIN_DOUT,
-            .invert_flags = { .mclk_inv=false, .bclk_inv=false, .ws_inv=false },
-        },
+        .clk_cfg = { .sample_rate_hz = SAMPLE_RATE, .clk_src = I2S_CLK_SRC_DEFAULT,
+                     .mclk_multiple = I2S_MCLK_MULTIPLE_256, .ext_clk_freq_hz = 0 },
+        .slot_cfg = { .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT, .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
+                      .slot_mode = I2S_SLOT_MODE_STEREO, .slot_mask = I2S_STD_SLOT_BOTH,
+                      .ws_width = I2S_DATA_BIT_WIDTH_16BIT, .ws_pol = false, .bit_shift = true,
+                      .left_align = true, .big_endian = false, .bit_order_lsb = false },
+        .gpio_cfg = { .mclk = PIN_MCK, .bclk = PIN_BCK, .ws = PIN_WS,
+                      .dout = PIN_DOUT, .din = PIN_DIN,
+                      .invert_flags = { .mclk_inv=false, .bclk_inv=false, .ws_inv=false } },
     };
-    if (tx) { i2s_channel_init_std_mode(tx, &sc); i2s_channel_enable(tx); }
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(tx, &sc));
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(rx, &sc));
+    ESP_ERROR_CHECK(i2s_channel_enable(tx));
+    ESP_ERROR_CHECK(i2s_channel_enable(rx));
+    printf("AUDIO: I2S full-duplex OK\n");
 
     /* Queue + output task */
     audio_queue = xQueueCreate(AUDIO_QUEUE_ITEMS, sizeof(audio_chunk_t));
