@@ -5,6 +5,7 @@
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
 #include "esp_tls.h"
+#include "esp_heap_caps.h"
 #include "cJSON.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -70,6 +71,9 @@ static xz_state_cb_t state_cb = NULL;
 static xz_audio_cb_t audio_cb = NULL;
 
 static TaskHandle_t client_task = NULL;
+static StackType_t *client_task_stack = NULL;
+static StaticTask_t client_task_tcb;
+#define XZ_CLIENT_STACK_WORDS 8192
 static EventGroupHandle_t events = NULL;
 #define EVT_STOP      BIT0
 #define EVT_AUDIO_IN  BIT1
@@ -265,7 +269,8 @@ static void handle_binary(const uint8_t *data, int len)
 static bool fetch_ws_url_from_ota(char *url_out, int max_len)
 {
     ESP_LOGI(TAG, "Fetching WS URL from OTA server...");
-    char *buf = malloc(8192);
+    char *buf = heap_caps_malloc(16384, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!buf) buf = malloc(16384);
     if (!buf) return false;
 
     esp_http_client_config_t http_cfg = {
@@ -289,7 +294,7 @@ static bool fetch_ws_url_from_ota(char *url_out, int max_len)
     int read_len = 0;
 
     if (err == ESP_OK && status == 200) {
-        read_len = esp_http_client_read_response(http, buf, 8191);
+        read_len = esp_http_client_read_response(http, buf, 16383);
         if (read_len > 0) buf[read_len] = 0;
     }
     esp_http_client_cleanup(http);
@@ -384,15 +389,30 @@ static void client_thread(void *arg)
     esp_websocket_client_config_t ws_cfg = {
         .uri = cfg.ws_url,
         .task_prio = 5,
-        .task_stack = 8192,
+        .task_stack = 6144,
         .buffer_size = 4096,
         .reconnect_timeout_ms = 5000,
         .network_timeout_ms = 10000,
         .disable_auto_reconnect = false,
     };
     ws = esp_websocket_client_init(&ws_cfg);
+    if (!ws) {
+        ESP_LOGE(TAG, "WS init failed");
+        set_state(XZ_STATE_IDLE, "WS init failed");
+        client_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
     esp_websocket_register_events(ws, WEBSOCKET_EVENT_ANY, ws_event_handler, NULL);
-    esp_websocket_client_start(ws);
+    if (esp_websocket_client_start(ws) != ESP_OK) {
+        ESP_LOGE(TAG, "WS start failed — check heap");
+        esp_websocket_client_destroy(ws);
+        ws = NULL;
+        set_state(XZ_STATE_IDLE, "WS start failed");
+        client_task = NULL;
+        vTaskDelete(NULL);
+        return;
+    }
 
     while (1) {
         EventBits_t bits = xEventGroupWaitBits(events,
@@ -431,8 +451,18 @@ bool xz_client_start(void)
 {
     if (client_task) return false;
     xEventGroupClearBits(events, EVT_STOP | EVT_AUDIO_IN);
-    return xTaskCreate(client_thread, "xz_client", 8192,
-                       NULL, 4, &client_task) == pdPASS;
+    /* Allocate stack from PSRAM to save internal DRAM for WS task */
+    if (!client_task_stack) {
+        client_task_stack = heap_caps_malloc(XZ_CLIENT_STACK_WORDS * sizeof(StackType_t),
+                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    if (!client_task_stack) {
+        ESP_LOGE(TAG, "No PSRAM for client stack");
+        return false;
+    }
+    client_task = xTaskCreateStatic(client_thread, "xz_client",
+        XZ_CLIENT_STACK_WORDS, NULL, 4, client_task_stack, &client_task_tcb);
+    return client_task != NULL;
 }
 
 void xz_client_stop(void)

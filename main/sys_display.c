@@ -31,7 +31,7 @@ static const char *TAG = "sys_display";
 #define LCD_H_RES         368
 #define LCD_V_RES         448
 
-#define LVGL_BUF_HEIGHT   (LCD_V_RES / 4)    /* 112 */
+#define LVGL_BUF_HEIGHT   (LCD_V_RES / 8)    /* 56 — save 80KB internal RAM */
 #define LVGL_TICK_MS      2
 #define LVGL_TASK_PRIO    2
 #define LVGL_TASK_STACK   (4 * 1024)

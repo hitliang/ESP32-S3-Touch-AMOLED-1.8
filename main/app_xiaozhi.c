@@ -11,6 +11,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_heap_caps.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -36,11 +37,14 @@ static volatile int mic_state = MIC_IDLE;
 static bool xz_running = false;
 
 /* Mic stream task */
-static StackType_t stream_stack[2048];
+#define MIC_STREAM_STACK_WORDS 2048
+static StackType_t stream_stack[MIC_STREAM_STACK_WORDS];
 static StaticTask_t stream_tcb;
 static TaskHandle_t stream_handle = NULL;
 
 extern const lv_font_t lv_font_simsun_16_cjk;
+
+static void mic_stream_task(void *arg);
 
 static void add_msg(const char *pfx, const char *txt, uint32_t color)
 {
@@ -85,6 +89,9 @@ static void xz_state_handler(xz_state_t st, const char *text)
         lv_obj_set_style_text_color(status_lbl, lv_color_hex(0x44cc44), 0);
         /* Start listening immediately */
         xz_client_start_listening();
+        /* Start mic streaming task now that we're connected */
+        stream_handle = xTaskCreateStatic(mic_stream_task, "mic_strm",
+            MIC_STREAM_STACK_WORDS, NULL, 4, stream_stack, &stream_tcb);
         break;
     case XZ_STATE_LISTENING:
         add_msg("You: ", text, 0x4488cc);
@@ -162,10 +169,6 @@ static void on_mic_btn(lv_event_t *e)
         lv_label_set_text(status_lbl, "Connecting...");
         lv_obj_set_style_text_color(status_lbl, lv_color_hex(0xccaa44), 0);
 
-        /* Start mic streaming task */
-        stream_handle = xTaskCreateStatic(mic_stream_task, "mic_strm",
-            2048, NULL, 4, stream_stack, &stream_tcb);
-
     } else if (mic_state == MIC_RECORDING || mic_state == MIC_PROCESSING) {
         mic_state = MIC_IDLE;
         update_mic_btn();
@@ -236,10 +239,6 @@ static void create(lv_obj_t *parent)
         update_mic_btn();
         lv_label_set_text(status_lbl, "Connecting...");
         lv_obj_set_style_text_color(status_lbl, lv_color_hex(0xccaa44), 0);
-
-        /* Start mic streaming task — starts pumping audio when connected */
-        stream_handle = xTaskCreateStatic(mic_stream_task, "mic_strm",
-            2048, NULL, 4, stream_stack, &stream_tcb);
     } else {
         mic_state = MIC_IDLE;
         update_mic_btn();

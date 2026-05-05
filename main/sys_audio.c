@@ -102,15 +102,13 @@ void sys_audio_init(void)
     es8311_voice_volume_set(es, 80, NULL);
     es8311_microphone_config(es, false);
 
-    /* I2S channel — config aligned with xiaozhi */
+    /* I2S TX channel */
     i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     cc.auto_clear = true;
     cc.auto_clear_after_cb = true;
     cc.dma_desc_num = 6;
     cc.dma_frame_num = 240;
-    if (i2s_new_channel(&cc, &tx, NULL) != ESP_OK) {
-        printf("AUDIO: I2S busy, using existing\n");
-    }
+    i2s_new_channel(&cc, &tx, NULL);
 
     i2s_std_config_t sc = {
         .clk_cfg = {
@@ -135,46 +133,31 @@ void sys_audio_init(void)
     if (tx) i2s_channel_init_std_mode(tx, &sc);
     if (tx) i2s_channel_enable(tx);
 
-    /* I2S RX channel for microphone */
-    i2s_chan_config_t rcc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_SLAVE);
+    /* I2S RX — same slot config as TX, mic_stream extracts left channel */
+    i2s_chan_config_t rcc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     rcc.auto_clear = true;
     rcc.auto_clear_after_cb = true;
     rcc.dma_desc_num = 6;
     rcc.dma_frame_num = 240;
-    if (i2s_new_channel(&rcc, NULL, &rx) != ESP_OK) {
-        printf("AUDIO: I2S RX busy\n");
+    if (i2s_new_channel(&rcc, NULL, &rx) == ESP_OK && rx) {
+        i2s_std_config_t rsc = {
+            .clk_cfg = { .sample_rate_hz = SAMPLE_RATE, .clk_src = I2S_CLK_SRC_DEFAULT,
+                         .mclk_multiple = I2S_MCLK_MULTIPLE_256 },
+            .slot_cfg = { .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT, .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
+                          .slot_mode = I2S_SLOT_MODE_STEREO, .slot_mask = I2S_STD_SLOT_BOTH,
+                          .ws_width = I2S_DATA_BIT_WIDTH_16BIT, .ws_pol = false, .bit_shift = true },
+            .gpio_cfg = { .mclk = I2S_GPIO_UNUSED, .bclk = I2S_GPIO_UNUSED, .ws = I2S_GPIO_UNUSED,
+                          .dout = I2S_GPIO_UNUSED, .din = PIN_DIN,
+                          .invert_flags = { .mclk_inv=false, .bclk_inv=false, .ws_inv=false } },
+        };
+        i2s_channel_init_std_mode(rx, &rsc);
+        i2s_channel_enable(rx);
     }
-    i2s_std_config_t rsc = {
-        .clk_cfg = {
-            .sample_rate_hz = SAMPLE_RATE,
-            .clk_src = I2S_CLK_SRC_DEFAULT,
-            .mclk_multiple = I2S_MCLK_MULTIPLE_256,
-        },
-        .slot_cfg = {
-            .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
-            .slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO,
-            .slot_mode = I2S_SLOT_MODE_STEREO, /* codec sends stereo, we pick left channel */
-            .slot_mask = I2S_STD_SLOT_LEFT,
-            .ws_width = I2S_DATA_BIT_WIDTH_16BIT,
-            .ws_pol = false,
-            .bit_shift = true,
-        },
-        .gpio_cfg = {
-            .mclk = I2S_GPIO_UNUSED,
-            .bclk = I2S_GPIO_UNUSED,
-            .ws = I2S_GPIO_UNUSED,
-            .dout = I2S_GPIO_UNUSED,
-            .din = PIN_DIN,
-            .invert_flags = { .mclk_inv=false, .bclk_inv=false, .ws_inv=false },
-        },
-    };
-    if (rx) i2s_channel_init_std_mode(rx, &rsc);
-    if (rx) i2s_channel_enable(rx);
 
     /* Queue + output task */
     audio_queue = xQueueCreate(AUDIO_QUEUE_ITEMS, sizeof(audio_chunk_t));
     audio_events = xEventGroupCreate();
-    xTaskCreate(audio_output_task, "audio_out", 4096, NULL, 5, &audio_task_handle);
+    xTaskCreate(audio_output_task, "audio_out", 2048, NULL, 5, &audio_task_handle);
 
     inited = true;
     printf("AUDIO: ready\n");
