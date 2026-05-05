@@ -122,4 +122,13 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_timer_start_periodic(btn_timer, 50000));
 
     ESP_LOGI(TAG, "=== Boot complete ===");
+
+    /* Auto-launch xiaozhi app after WiFi connects */
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    while (!sys_wifi_is_connected()) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    ESP_LOGI(TAG, "Launching XiaoZhi AI...");
+    app_framework_launch_app(3);  /* index 3 = xiaozhi */
 }
