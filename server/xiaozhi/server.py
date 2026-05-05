@@ -36,7 +36,7 @@ logger = logging.getLogger("xz.server")
 
 # VAD settings
 VAD_ENERGY_THRESHOLD = 500       # RMS energy threshold for speech
-VAD_SILENCE_FRAMES = 15          # consecutive silent frames to end speech (15*60ms = 900ms)
+VAD_SILENCE_FRAMES = 8           # consecutive silent frames to end speech (8*60ms = 480ms)
 VAD_MIN_SPEECH_FRAMES = 5        # minimum frames before considering it speech
 VAD_MAX_SPEECH_FRAMES = 500      # max frames before auto-cutoff (500*60ms = 30s)
 
@@ -232,30 +232,33 @@ class XiaozhiServer:
         session.listening = True
 
     async def _send_tts(self, session: DeviceSession, text: str):
-        """Synthesize TTS and stream Opus frames to device."""
+        """Stream TTS to device — send Opus frames as soon as PCM chunks arrive."""
         session.speaking = True
 
         # Send TTS start event
         await session.ws.send(json.dumps(make_tts_event("start", text), ensure_ascii=False))
 
-        # Synthesize
-        pcm_24k = await self.tts.synthesize(text)
-        if not pcm_24k:
-            logger.error("TTS produced no audio")
-            await session.ws.send(json.dumps(make_tts_event("stop"), ensure_ascii=False))
-            session.speaking = False
-            return
+        first_frame = True
+        total_pcm = 0
 
-        # Resample 24kHz → 16kHz if needed
-        pcm_16k = self._resample_24k_to_16k(pcm_24k)
+        async for pcm_chunk, is_last in self.tts.synthesize_stream(text):
+            if pcm_chunk:
+                total_pcm += len(pcm_chunk)
+                # Resample 24kHz → 16kHz
+                pcm_16k = self._resample_24k_to_16k(pcm_chunk)
+                # Encode to Opus frames and send immediately
+                opus_frames = session.encoder.encode_pcm(pcm_16k)
+                for frame in opus_frames:
+                    await session.ws.send(pack_opus_frame(frame))
+                    if first_frame:
+                        logger.info(f"TTS first frame sent: {len(frame)} bytes opus")
+                        first_frame = False
+                    await asyncio.sleep(0.01)  # minimal pacing for streaming
 
-        # Encode to Opus frames and send
-        opus_frames = session.encoder.encode_pcm(pcm_16k)
-        for frame in opus_frames:
-            await session.ws.send(pack_opus_frame(frame))
-            await asyncio.sleep(0.055)  # ~60ms per frame pacing
+            if is_last:
+                break
 
-        # Send TTS stop event
+        logger.info(f"TTS done: {total_pcm} bytes PCM total")
         await session.ws.send(json.dumps(make_tts_event("stop"), ensure_ascii=False))
         session.speaking = False
 
